@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Breach</title>
-<meta name="description" content="Neon arena FPS: clear sectors, pick upgrades, topple Wardens">
+<meta name="description" content="Neon arena FPS: clear sectors, pick upgrades, topple Wardens and Thumpers">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--background); color: var(--foreground); font-family: ui-monospace, "JetBrainsMono Nerd Font", monospace; }
   canvas { display: block; }
@@ -113,6 +113,16 @@
   .screen > div { padding: 28px 44px; border-radius: 14px; background: color-mix(in srgb, var(--background) 88%, transparent); border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent); }
   .screen button, .screen [data-click] { pointer-events: auto; }
   .screen h1 { margin: 0 0 16px; font-size: 64px; letter-spacing: 4px; color: var(--accent); }
+  /* The title: just the name, a line, and the way in, over the arena slowly turning behind. */
+  #title { background: radial-gradient(ellipse 46% 42% at 50% 52%, color-mix(in srgb, var(--background) 78%, transparent), color-mix(in srgb, var(--background) 20%, transparent)); }
+  #title > div { background: none; border: none; padding: 0 16px; }
+  #title h1 { font-size: clamp(64px, 11vw, 128px); letter-spacing: 0.3em; margin: 0 0 6px 0.3em; text-shadow: 0 0 32px color-mix(in srgb, var(--accent) 50%, transparent), 0 0 4px var(--background); }
+  #title p { text-shadow: 0 0 8px var(--background), 0 0 2px var(--background); }
+  #title .tagline { margin-bottom: 52px; font-size: 14px; letter-spacing: 6px; text-transform: uppercase; color: color-mix(in srgb, var(--foreground) 70%, var(--background)); }
+  #title .deploy { font-size: 20px; letter-spacing: 3px; animation: breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity: 0.45; } }
+  #title .small { font-size: 14px; letter-spacing: 1px; margin-top: 14px; }
+  #runs-title { margin-top: 18px; border-collapse: separate; border-spacing: 0; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--background) 85%, transparent); }
   .screen p { margin: 8px 0; font-size: 18px; }
   .key { color: var(--accent); }
   .dim { color: color-mix(in srgb, var(--foreground) 55%, var(--background)); }
@@ -193,12 +203,11 @@
 
 <div id="title" class="screen show"><div>
   <h1>BREACH</h1>
-  <p>Break through sector after sector of a hostile grid. Every fifth, a Warden.</p>
-  <p><span class="key">W A S D</span> move · <span class="key">Mouse</span> aim · <span class="key">Right click</span> sights · <span class="key">Click</span> / <span class="key">F</span> fire · <span class="key">Space</span> jump · <span class="key">R</span> reload · <span class="key">Shift</span> dash · <span class="key">E</span> nova</p>
-  <p class="dim" id="title-best"></p>
-  <table class="runs" id="runs-title"></table>
-  <p>Click or press <span class="key">Space</span> to deploy</p>
-  <p class="dim">? for settings and controls</p>
+  <p class="tagline">Break the grid · Topple its bosses</p>
+  <p class="deploy">Click or press <span class="key">Space</span> to deploy</p>
+  <p class="small" id="title-best"></p>
+  <table class="runs" id="runs-title" hidden></table>
+  <p class="small dim"><span id="runs-hint"><span class="key">R</span> past runs · </span><span class="key">?</span> settings &amp; controls</p>
 </div></div>
 
 <div id="paused" class="screen"><div>
@@ -237,7 +246,7 @@
       <tr><td class="key">M</td><td>Sound on or off</td></tr>
     </table></div>
   </div>
-  <p class="dim">Enemies may drop weapon mods (Scatter, Railgun, Storm) that last until the sector ends; Scatter loads shell by shell (fire to stop). Ammo is limited: enemies drop more when you run low. Land a jump on enemies to stomp them. When JUMP flashes, a shockwave or a turret's beam is about to sweep the floor.</p>
+  <p class="dim">Enemies may drop weapon mods (Scatter, Railgun, Storm) that last until the sector ends; Scatter loads shell by shell (fire to stop). Ammo is limited: enemies drop more when you run low. Land a jump on enemies to stomp them. When JUMP flashes, a shockwave or a turret's beam is about to sweep the floor: jump it, or dash through it.</p>
   <p class="dim"><span class="key">↑ ↓</span> choose · <span class="key">← →</span> change · <span class="key">Esc</span> or <span class="key">?</span> to close</p>
 </div></div>
 
@@ -472,7 +481,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // Breach: a first-person arena shooter. Each sector is an arena of cover with waves of enemies
 // teleporting in; clear every wave, pick one of three upgrades, and go on. Every fifth sector
-// holds a Warden. Endless: the score is what is counted, the furthest sector is kept too.
+// holds a boss, a Warden and the Thumper by turns. Endless: the score is what is counted, the furthest sector is kept too.
 
 const { clamp, damp } = THREE.MathUtils;
 const DARK = PALETTE.mode === 'dark';
@@ -493,10 +502,13 @@ const TYPES = {
   brute:   { color: PALETTE.magenta, hp: 150,  speed: 2.3, points: 350,  r: 1.3,  hitR: 1.5,  y0: 0,   y1: 3.2, pool: 8,  drop: 1,    glow: 0.45 },
   sniper:  { color: PALETTE.cyan,    hp: 30,   speed: 3.2, points: 250,  r: 0.6,  hitR: 0.8,  y0: 0,   y1: 3.4, pool: 8,  drop: 0.2,  glow: 0.55, name: 'LANCERS' },
   crawler: { color: PALETTE.green,   hp: 55,   speed: 6.2, points: 200,  r: 0.5,  hitR: 0.55, y0: 0,   y1: 0.7, pool: 10, drop: 0.12, glow: 0.45, name: 'CRAWLERS', aimY1: 1.8 },
-  thumper: { color: THUMP_COLOR,     hp: 120,  speed: 2.4, points: 300,  r: 1.0,  hitR: 1.15, y0: 0,   y1: 2.4, pool: 8,  drop: 0.3,  glow: 0.45, name: 'THUMPERS' },
+  thumper: { color: THUMP_COLOR,     hp: 120,  speed: 2.4, points: 300,  r: 1.0,  hitR: 1.15, y0: 0,   y1: 2.4, pool: 8,  drop: 0.3,  glow: 0.45, name: 'MINI-THUMPERS',
+             rush: 24, standOff: 5, chargeT: 0.9, coolT: 2.2, blastR: 9, blastDmg: 16, ringSpeed: 9 },
+  thumperBoss: { color: THUMP_COLOR, hp: 2000, speed: 0,   points: 6000, r: 2.3,  hitR: 2.5,  y0: 0,   y1: 4.6, pool: 1,  drop: 0,    glow: 0.45, boss: true, scale: 2.2,
+             rush: 38, standOff: 7.5, chargeT: 0.75, coolT: 2, blastR: 40, blastDmg: 20, ringSpeed: 11 },
   turret:  { color: PALETTE.red,     hp: 70,   speed: 0,   points: 250,  r: 0.7,  hitR: 0.85, y0: 0,   y1: 1.7, pool: 6,  drop: 0.3,  glow: 0.5 },
   bulwark: { color: PALETTE.blue,    hp: 80,   speed: 2.7, points: 300,  r: 0.9,  hitR: 1.2,  y0: 0,   y1: 2.9, pool: 10, drop: 0.25, glow: 0.4,  name: 'BULWARKS' },
-  boss:    { color: PALETTE.red,     hp: 2400, speed: 2.0, points: 5000, r: 3.2,  hitR: 2.6,  y0: 0.8, y1: 6.2, pool: 1,  drop: 0,    glow: 0.4 },
+  boss:    { boss: true, color: PALETTE.red, hp: 2400, speed: 2.0, points: 5000, r: 3.2,  hitR: 2.6,  y0: 0.8, y1: 6.2, pool: 1,  drop: 0,    glow: 0.4 },
 };
 
 const UPGRADES = [
@@ -1045,15 +1057,29 @@ function build() {
   for (const o of hidden) o.visible = false;
 }
 
+let runsShown = false;
 ui.titleBest = () => {
-  const career = saved.get('career', null);
+  const career = saved.get('career', null), runs = loadRuns();
   const parts = [];
-  if (bestSector > 0) parts.push(`Furthest: sector ${bestSector}`);
-  if (career?.runs) parts.push(`${fmt(career.runs)} run${career.runs === 1 ? '' : 's'} · ${fmt(career.kills ?? 0)} kills`);
+  if (best !== null) parts.push(`Best ${formatScore(best)}`);
+  if (bestSector > 0) parts.push(`Sector ${bestSector}`);
   $('title-best').textContent = parts.join('  ·  ');
   $('best-sector').textContent = bestSector > 0 ? `SECTOR ${bestSector}` : '';
-  renderRuns($('runs-title'), loadRuns(), null);
+  // Past runs wait behind R on the title, so it stays clear.
+  const table = $('runs-title');
+  renderRuns(table, runs, null);
+  if (career?.runs && table.caption) table.caption.textContent = `TOP RUNS · ${fmt(career.runs)} RUN${career.runs === 1 ? '' : 'S'} · ${fmt(career.kills ?? 0)} KILLS`;
+  table.hidden = !runsShown || !runs.length;
+  $('runs-hint').hidden = !runs.length;
 };
+// The title screen's own key: R shows or hides past runs (and does not start a round).
+function screenInput(code) {
+  if (code !== 'KeyR' || state !== 'title' || !loadRuns().length) return false;
+  runsShown = !runsShown;
+  ui.titleBest();
+  sound(runsShown ? 660 : 520, 0.05, 'triangle', runsShown ? 880 : 440, 0.04);
+  return true;
+}
 
 // Past runs: the best eight by score, kept between sessions.
 function loadRuns() {
@@ -1167,7 +1193,7 @@ function makeEnemy(type, def, edgeMat, ringMat) {
     }
     e.trail = Array.from({ length: 64 }, () => ({ x: 0, z: 0 }));
     e.trailN = 0; e.trailHead = 0;
-  } else if (type === 'thumper') {
+  } else if (type === 'thumper' || type === 'thumperBoss') {
     e.parts.body = add(new THREE.Mesh(G.thumpBody, body), 0.95);
     e.parts.edges = add(new THREE.LineSegments(G.thumpBodyEdges, edgeMat), 0.95);
     e.parts.fists = [];
@@ -1179,6 +1205,15 @@ function makeEnemy(type, def, edgeMat, ringMat) {
     e.eyeMat = new THREE.MeshStandardMaterial({ color: col(PALETTE.foreground), emissive: col(def.color), emissiveIntensity: 1 });
     e.parts.eye = add(new THREE.Mesh(G.eye, e.eyeMat), 1.4);
     e.parts.eye.position.z = -0.75;
+    if (def.scale) {
+      e.parts.crown = add(new THREE.Mesh(G.turretRing, new THREE.MeshBasicMaterial({ color: DARK ? hot(def.color, 1.25) : mix(def.color, '#000000', 0.15) })), 2.1);
+      e.parts.crown.rotation.x = Math.PI / 2;
+      e.parts.crown.scale.setScalar(2.4);
+      const inner = new THREE.Group();
+      inner.scale.setScalar(def.scale);
+      while (g.children.length) inner.add(g.children[0]);
+      g.add(inner);
+    }
   } else if (type === 'turret') {
     // A low turret the Warden drops into the arena: it sweeps a beam across the floor at knee height.
     add(new THREE.Mesh(G.turretBase, body), 0.15);
@@ -1329,7 +1364,7 @@ function rayCyl(ox, oy, oz, dx, dy, dz, cx, cz, r, lo, hi) {
   return Math.max(t0, 0);
 }
 function rayEnemy(ox, oy, oz, dx, dy, dz, e) {
-  const yo = e.type === 'boss' ? e.y - 3.4 : e.type === 'thumper' ? e.y : 0, lo = e.def.y0 + yo, hi = (e.def.aimY1 ?? e.def.y1) + yo;
+  const yo = e.type === 'boss' ? e.y - 3.4 : 0, lo = e.def.y0 + yo, hi = (e.def.aimY1 ?? e.def.y1) + yo;
   let t = rayCyl(ox, oy, oz, dx, dy, dz, e.x, e.z, e.def.hitR, lo, hi);
   if (e.segs) for (const s of e.segs) {
     const u = rayCyl(ox, oy, oz, dx, dy, dz, s.x, s.z, 0.45, lo, hi);
@@ -1416,8 +1451,8 @@ function startSector(n) {
   // A new sector starts with the magazine topped up from the reserve.
   ammo += takeReserve(stats.mag - ammo);
   py = 0; vy = 0; grounded = true; airJumps = stats.airJumps; ppx = px; ppy = 0; ppz = pz; eye = EYE;
-  const fresh = { 2: TYPES.crawler.name, 3: `CHARGERS & ${TYPES.thumper.name}`, 4: 'BRUTES', 6: TYPES.sniper.name, 7: TYPES.bulwark.name }[n];
-  banner(`SECTOR ${n}`, n % 5 === 0 ? `${layout.name} · A WARDEN AWAITS` : fresh ? `${layout.name} · NEW: ${fresh}` : layout.name, 2.4);
+  const fresh = { 2: TYPES.crawler.name, 3: 'CHARGERS', 4: 'BRUTES', 6: `${TYPES.sniper.name} & ${TYPES.thumper.name}`, 7: TYPES.bulwark.name }[n];
+  banner(`SECTOR ${n}`, n % 5 === 0 ? `${layout.name} · ${n % 10 === 0 ? 'THE THUMPER' : 'A WARDEN'} AWAITS` : fresh ? `${layout.name} · NEW: ${fresh}` : layout.name, 2.4);
   if (n > bestSector && booted && played) { bestSector = n; saved.set('bestSector', n); ui.titleBest(); }
   if (state === 'playing') [330, 440, 660].forEach((f, i) => setTimeout(() => sound(f, 0.18, 'square', f * 1.5, 0.05), i * 90));
 }
@@ -1431,13 +1466,13 @@ function buildWave(n, w) {
   if (n >= 4) options.push(['brute', 4, 1.1 + n * 0.05]);
   if (n >= 6) options.push(['sniper', 3, 1.3]);
   if (n >= 7) options.push(['bulwark', 3, 1.6]);
-  if (n >= 3) options.push(['thumper', 4, 0.9 + n * 0.03]);
+  if (n >= 6) options.push(['thumper', 4, 0.9 + n * 0.03]);
   const list = [];
   // A newly met enemy turns up in the first wave of its sector, so it is learned early.
   if (w === 1 && n === 2) { list.push('crawler'); budget -= 2; }
-  if (w === 1 && n === 3) { list.push('charger', 'thumper'); budget -= 6; }
+  if (w === 1 && n === 3) { list.push('charger'); budget -= 2; }
   if (w === 1 && n === 4) { list.push('brute'); budget -= 4; }
-  if (w === 1 && n === 6) { list.push('sniper', 'sniper'); budget -= 6; }
+  if (w === 1 && n === 6) { list.push('sniper', 'sniper', 'thumper'); budget -= 10; }
   if (w === 1 && n === 7) { list.push('bulwark', 'bulwark'); budget -= 6; }
   while (budget >= 1 && list.length < 24) {
     const fit = options.filter(o => o[1] <= budget), total = fit.reduce((s, o) => s + o[2], 0);
@@ -1452,8 +1487,10 @@ function buildWave(n, w) {
 function startWave(w) {
   wave = w; spawnClock = 0; waveGap = 0; queue = [];
   if (sector % 5 === 0 && w === waves) {
-    queue.push({ type: 'boss', at: 0.3 });
-    banner('WARDEN INBOUND', `MK-${roman(sector / 5)}`, 2.2);
+    // The bosses take turns: a Warden at 5, 15, 25…, the Thumper at 10, 20, 30…
+    const thumper = sector % 10 === 0;
+    queue.push({ type: thumper ? 'thumperBoss' : 'boss', at: 0.3 });
+    banner(thumper ? 'THUMPER INBOUND' : 'WARDEN INBOUND', `MK-${roman(bossMark(sector))}`, 2.2);
     sound(70, 1.2, 'sawtooth', 40, 0.12);
   } else {
     let t = 0;
@@ -1461,6 +1498,7 @@ function startWave(w) {
     if (w > 1) banner(`WAVE ${w} / ${waves}`, '', 1.4);
   }
 }
+const bossMark = n => n % 10 === 0 ? n / 10 : (n + 5) / 10;
 const roman = n => ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'][n - 1] ?? String(n);
 
 function sectorCleared() {
@@ -1645,7 +1683,7 @@ function land(speed) {
   if (speed > -8) return;
   let stomped = 0;
   for (const e of [...enemies]) {
-    if (e.type === 'boss' || !e.active || nearestPart(e) > 2.4) continue;
+    if (e.def.boss || !e.active || nearestPart(e) > 2.4) continue;
     e.stun = Math.max(e.stun, 0.5);
     damageEnemy(e, 45 + stats.damage * 2, false, e.x, 0.6, e.z);
     stomped++;
@@ -1897,11 +1935,14 @@ function tracer(from, x, y, z, color = PALETTE.accent, thick = 1) {
 
 function damageEnemy(e, amount, crit, x, y, z) {
   if (!e.active) return;
+  // The Thumper is exposed while it stands spent after a blast: every hit lands double.
+  const exposed = e.type === 'thumperBoss' && e.mode === 'cool';
+  if (exposed) amount *= 2;
   hits++;
   e.hp -= amount;
   e.flash = 1;
   hitT = 1;
-  ui.hitmark.classList.toggle('crit', crit);
+  ui.hitmark.classList.toggle('crit', crit || exposed);
   burst(x, y, z, crit ? PALETTE.yellow : e.def.color, crit ? 8 : 4, 5, 0.35);
   sound(crit ? 1600 : 1100, 0.035, 'square', crit ? 2000 : 900, 0.03);
   if (crit) popup('CRIT', x, y + 0.6, z, PALETTE.yellow);
@@ -1922,7 +1963,7 @@ function killEnemy(e) {
   popup(`+${fmt(gain)}`, e.x, e.y + 1.2, e.z, PALETTE.accent);
   nova = Math.min(1, nova + stats.novaGain * (e.type === 'brute' ? 2.5 : 1));
   hp = Math.min(stats.maxHp, hp + stats.leech);
-  const big = e.type === 'brute' || e.type === 'boss';
+  const big = e.type === 'brute' || e.def.boss;
   burst(e.x, e.y + (e.type === 'drone' ? 0 : 1), e.z, e.def.color, big ? 80 : 32, big ? 11 : 8, 0.9);
   burst(e.x, e.y + 1, e.z, PALETTE.foreground, big ? 16 : 6, big ? 14 : 10, 0.35);
   noise(big ? 0.7 : 0.3, big ? 0.3 : 0.2, big ? 700 : 1400);
@@ -1931,8 +1972,8 @@ function killEnemy(e) {
   if (random() < e.def.drop) dropPickup(e.x, e.z);
   // Ammo drops grow likely as the rifle's supply runs low; none while a cache is the way out.
   const supply = (weapon ? rifleMag : ammo) + reserve;
-  if (e.type !== 'boss' && !scavenging && random() < (supply <= stats.mag ? 0.5 : supply <= stats.mag * 2 ? 0.28 : 0.04)) dropAmmo(e.x + 0.6, e.z);
-  if (e.type !== 'boss' && phase === 'fight' && random() < (e.type === 'brute' ? 0.22 : 0.045)) dropWeapon(e.x, e.z);
+  if (!e.def.boss && !scavenging && random() < (supply <= stats.mag ? 0.5 : supply <= stats.mag * 2 ? 0.28 : 0.04)) dropAmmo(e.x + 0.6, e.z);
+  if (!e.def.boss && phase === 'fight' && random() < (e.type === 'brute' ? 0.22 : 0.045)) dropWeapon(e.x, e.z);
   if (e.type === 'crawler') for (const s of e.segs) burst(s.x, 0.4, s.z, e.def.color, 6, 5, 0.6);
   if (e.type === 'brute' && !purging) {
     for (let i = 0; i < 3; i++) {
@@ -1940,7 +1981,7 @@ function killEnemy(e) {
       activate('drone', e.x + Math.cos(a) * 1.3, e.z + Math.sin(a) * 1.3, { stun: 0.7 });
     }
   }
-  if (e.type === 'boss') bossDown(e);
+  if (e.def.boss) bossDown(e);
 }
 
 function bossDown(e) {
@@ -1956,7 +1997,7 @@ function bossDown(e) {
   for (const b of bullets) if (b.active) { b.active = false; b.mesh.visible = false; }
   clearQuakes();
   for (let i = 0; i < 4; i++) dropPickup(e.x + (random() - 0.5) * 6, e.z + (random() - 0.5) * 6);
-  banner('WARDEN DESTROYED', `+${fmt(e.def.points * comboMult())}`, 2);
+  banner(`${e.type === 'boss' ? 'WARDEN' : 'THUMPER'} DESTROYED`, `+${fmt(e.def.points * comboMult())}`, 2);
 }
 
 function removeEnemy(e) {
@@ -2022,7 +2063,7 @@ function fireNova() {
     e.vx = (e.x - px) / (d || 1) * 14; e.vz = (e.z - pz) / (d || 1) * 14;
     e.stun = Math.max(e.stun, 0.6);
     if (e.type === 'bulwark' && e.shieldHp > 0) breakShield(e);
-    damageEnemy(e, stats.novaDmg * k * (e.type === 'boss' ? 0.6 : 1), false, e.x, e.y + 1, e.z);
+    damageEnemy(e, stats.novaDmg * k * (e.def.boss ? 0.6 : 1), false, e.x, e.y + 1, e.z);
   }
   for (const b of bullets) if (b.active && Math.hypot(b.x - px, b.z - pz) < 14) { b.active = false; b.mesh.visible = false; burst(b.x, b.y, b.z, PALETTE.yellow, 3, 3, 0.3); }
 }
@@ -2080,26 +2121,27 @@ const _markerColors = new Map();
 function beginSpawn(type, near, opts = null) {
   const m = markers.find(m => !m.active);
   if (!m) return;
-  const spot = type === 'boss' ? { x: 0, z: -8 } : opts?.at ?? spawnSpot(type === 'drone' ? 11 : type === 'sniper' ? 17 : 13, near);
+  const big = TYPES[type].boss;
+  const spot = big ? { x: 0, z: -8 } : opts?.at ?? spawnSpot(type === 'drone' ? 11 : type === 'sniper' ? 17 : 13, near);
   const c = TYPES[type].color;
-  Object.assign(m, { active: true, type, x: spot.x, z: spot.z, t: 0, dur: type === 'boss' ? 2.2 : 1.1, opts });
+  Object.assign(m, { active: true, type, x: spot.x, z: spot.z, t: 0, dur: big ? 2.2 : 1.1, opts });
   let mc = _markerColors.get(c);
   if (!mc) { mc = [DARK ? hot(c, 2) : col(c), DARK ? hot(c, 1.2) : col(c)]; _markerColors.set(c, mc); }
   m.ringMat.color.copy(mc[0]);
   m.beamMat.color.copy(mc[1]);
   m.group.position.set(spot.x, 0, spot.z);
-  m.group.scale.setScalar(type === 'boss' ? 3 : type === 'brute' ? 1.6 : 1);
+  m.group.scale.setScalar(big ? 3 : type === 'brute' ? 1.6 : 1);
   m.group.visible = true;
-  sound(type === 'boss' ? 90 : 220, type === 'boss' ? 2 : 0.5, 'sine', type === 'boss' ? 180 : 660, 0.035);
+  sound(big ? 90 : 220, big ? 2 : 0.5, 'sine', big ? 180 : 660, 0.035);
 }
 
 function activate(type, x, z, opts) {
   const e = pools[type].find(e => !e.active);
   if (!e) return null;
   const n = sector;
-  // A Warden is sized to the player's firepower, so it is a fight however the upgrades went.
+  // A boss is sized to the player's firepower, so it is a fight however the upgrades went.
   const power = (stats.damage / 12) * (0.12 / stats.fireInterval) * stats.bolts * (1 + stats.crit * 2) / 1.1;
-  const hpScale = type === 'boss' ? (1 + 0.3 * (Math.floor(n / 5) - 1)) * Math.max(1, power) : 1 + 0.12 * (n - 1);
+  const hpScale = e.def.boss ? (1 + 0.3 * (Math.floor(n / 5) - 1)) * Math.max(1, power) : 1 + 0.12 * (n - 1);
   Object.assign(e, {
     active: true, x, z, y: 0, vx: 0, vz: 0, hp: e.def.hp * hpScale, maxHp: e.def.hp * hpScale, t: 0, phase: random() * 6.28,
     flash: 0, cool: 0, stun: opts?.stun ?? 0, pop: 1, side: random() < 0.5 ? 1 : -1, sideT: 2 + random() * 2,
@@ -2107,19 +2149,18 @@ function activate(type, x, z, opts) {
     speed: e.def.speed * Math.min(1.45, 1 + 0.035 * (n - 1)),
     attack: null, atkT: 0, atkCool: 2.5, tele: 0, cycle: 0, spiralA: 0, volleys: 0, orb: 0,
     aimY: py + 1.3, lx: x, lz: z, ly: 0, losT: 0, los: false, lunge: 0,
-    hy: 0, jumpV: 0, slamY: 0, slammed: false, beamA: random() * Math.PI * 2, beamDir: random() < 0.5 ? 1 : -1, beamLen: 0, prevD: null,
+    tx: x, tz: z, coolFor: 0, slamY: 0, slammed: false, beamA: random() * Math.PI * 2, beamDir: random() < 0.5 ? 1 : -1, beamLen: 0, prevD: null,
     aimX: px, aimZ: pz, locked: false, face: Math.atan2(-(px - x), -(pz - z)), shieldHp: 0, shieldMax: 0, shieldFlash: 0,
   });
   if (type === 'sniper') e.fireT = 1.2 + random() * 1.5;
   if (type === 'bulwark') e.shieldHp = e.shieldMax = 70 * hpScale;
   if (type === 'crawler') initCrawler(e);
-  if (type === 'thumper') e.fireT = 2 + random() * 1.5;
   e.group.visible = true;
   e.group.position.set(x, 0, z);
   enemies.push(e);
-  if (type === 'boss') {
+  if (e.def.boss) {
     bossRef = e;
-    ui['boss-name'].textContent = `WARDEN MK-${roman(n / 5)}`;
+    ui.bossBase = `${type === 'boss' ? 'WARDEN' : 'THUMPER'} MK-${roman(bossMark(n))}`;
   }
   return e;
 }
@@ -2146,7 +2187,7 @@ function updateEnemies(dt) {
     e.pop = Math.max(0, e.pop - dt * 3);
     const dx = px - e.x, dz = pz - e.z, dist = Math.hypot(dx, dz) || 0.001, nx = dx / dist, nz = dz / dist;
     let ax = 0, az = 0;           // where it wants to go, as a velocity
-    if (e.stun > 0 && e.mode !== 'leap') {      // a thumper mid-leap still comes down
+    if (e.stun > 0) {
       e.stun -= dt;
       e.vx = damp(e.vx, 0, 3, dt); e.vz = damp(e.vz, 0, 3, dt);
       if (e.type === 'sniper' && e.mode === 'aim') { e.mode = 'approach'; e.locked = false; e.fireT = 1; }
@@ -2198,36 +2239,44 @@ function updateEnemies(dt) {
           if (++e.volleys >= 3) { e.volleys = 0; e.fireT = 2.6 + random(); } else e.fireT = 0.17;
         } else e.fireT = 0.25;
       }
-    } else if (e.type === 'thumper') {
-      // Walks in, crouches, leaps and slams: shockwave rings roll out across the floor.
+    } else if (e.type === 'thumper' || e.type === 'thumperBoss') {
+      // Rushes to the player's side almost at once, charges, and blasts a ring along the floor that
+      // only a jump (or a dash) avoids. Then it stands spent for a moment, open to fire, and comes again.
+      const d = e.def, enraged = d.boss && e.hp < e.maxHp * 0.5, T = d.chargeT * (enraged ? 0.75 : 1);
       e.modeT += dt;
-      if (e.mode === 'approach') {
-        const want = dist > 12 ? 1 : dist < 6 ? -0.6 : 0;
-        ax = nx * want * e.speed; az = nz * want * e.speed;
-        e.vx = damp(e.vx, ax, 3, dt); e.vz = damp(e.vz, az, 3, dt);
-        e.fireT -= dt * rate;
-        if (e.fireT <= 0) { e.mode = 'crouch'; e.modeT = 0; sound(120, 0.6, 'sawtooth', 60, 0.05); }
-      } else if (e.mode === 'crouch') {
-        e.vx = damp(e.vx, 0, 10, dt); e.vz = damp(e.vz, 0, 10, dt);
-        e.charge = e.modeT / 0.6;
-        if (e.modeT > 0.6) { e.mode = 'leap'; e.modeT = 0; e.jumpV = 10; e.charge = 0; noise(0.2, 0.12, 1200); }
-      } else if (e.mode === 'leap') {
-        e.vx = nx * e.speed * 0.8; e.vz = nz * e.speed * 0.8;
-        e.jumpV -= 25 * dt;
-        e.hy += e.jumpV * dt;
-        if (e.hy <= 0 && e.modeT > 0.1) {
-          e.hy = 0; e.vx = e.vz = 0;
-          const rings = n >= 12 ? 3 : n >= 8 ? 2 : 1;
-          for (let i = 0; i < rings; i++) shockwave(e.x, e.z, 8.5 * shotSpeed, 16, i * 0.5, e.def.color);
-          burst(e.x, 0.3, e.z, e.def.color, 40, 8, 0.6);
-          noise(0.5, 0.3, 500);
-          sound(70, 0.5, 'sawtooth', 35, 0.1);
-          shake = Math.max(shake, cfg.shake * (0.12 * Math.max(0.3, 1 - dist / 30)));
-          e.mode = 'recover'; e.modeT = 0;
-        }
-      } else {
+      if (e.mode === 'approach') {                  // a beat after arriving, then the first rush
         e.vx = damp(e.vx, 0, 6, dt); e.vz = damp(e.vz, 0, 6, dt);
-        if (e.modeT > 0.9) { e.mode = 'approach'; e.modeT = 0; e.fireT = 3.4 + random() * 1.4; }
+        if (e.modeT > (d.boss ? 1.2 : 0.6 + e.phase * 0.15)) startRush(e);
+      } else if (e.mode === 'rush') {
+        const tx = e.tx - e.x, tz = e.tz - e.z, left = Math.hypot(tx, tz), speed = d.rush;
+        if (left <= speed * dt) {
+          e.vx = e.vz = 0; e.x = e.tx; e.z = e.tz;
+          e.mode = 'charge'; e.modeT = 0;
+          noise(0.3, 0.2, 700);
+          sound(d.boss ? 90 : 140, T, 'sawtooth', d.boss ? 360 : 520, 0.06);
+        } else {
+          e.vx = tx / left * speed; e.vz = tz / left * speed;
+          if (Math.random() < 0.7) burst(e.x, 0.8 * (d.scale ?? 1), e.z, d.color, d.boss ? 4 : 2, 2, 0.4, 0);
+        }
+      } else if (e.mode === 'charge') {
+        e.vx = e.vz = 0;
+        e.charge = Math.min(1, e.modeT / T);
+        // Warned from the start of the charge: what is left of it, then the ring's roll out to the player.
+        if (dist < d.blastR) warnJump(T - e.modeT + Math.max(0, dist - d.r - 0.45) / (d.ringSpeed * shotSpeed));
+        if (e.modeT >= T) {
+          for (let i = 0; i < (enraged ? 2 : 1); i++) shockwave(e.x, e.z, d.ringSpeed * shotSpeed, d.blastDmg, i * 0.45, d.color, d.blastR, d.r);
+          burst(e.x, 0.4, e.z, d.color, d.boss ? 80 : 36, d.boss ? 11 : 7, 0.7);
+          noise(d.boss ? 0.8 : 0.45, d.boss ? 0.32 : 0.24, d.boss ? 380 : 520);
+          sound(d.boss ? 50 : 75, d.boss ? 0.8 : 0.45, 'sawtooth', 30, d.boss ? 0.12 : 0.09);
+          shake = Math.max(shake, cfg.shake * (d.boss ? 0.3 : 0.12 * Math.max(0.3, 1 - dist / 20)));
+          if (d.boss) flashT = Math.max(flashT, 0.3);
+          e.charge = 0; e.mode = 'cool'; e.modeT = 0;
+          if (d.boss) popup('EXPOSED', e.x, 3, e.z, PALETTE.yellow);
+          e.coolFor = d.coolT * (d.boss ? 1 : 0.8 + random() * 0.4);
+        }
+      } else {                                      // spent: it stands still for the cooldown
+        e.vx = e.vz = 0;
+        if (e.modeT > e.coolFor) startRush(e);
       }
     } else if (e.type === 'turret') {
       // Warms up, then sweeps its beam round and round; cover blocks it, and so does being in the air.
@@ -2327,13 +2376,14 @@ function updateEnemies(dt) {
 
     // Keep apart from each other.
     if (e.type !== 'turret') for (const o of enemies) {
-      if (o === e || o.type === 'boss') continue;
+      if (o === e || o.def.boss) continue;
       const sx = e.x - o.x, sz = e.z - o.z, need = e.def.r + o.def.r + 0.2, d2 = sx * sx + sz * sz;
       if (d2 < need * need && d2 > 1e-6) { const d = Math.sqrt(d2), k = (need - d) / d * 0.5; e.x += sx * k; e.z += sz * k; }
     }
-    const hunt = scavenging && e.type !== 'boss' ? 1.3 : 1;      // they press harder on an empty gun
+    const hunt = scavenging && !e.def.boss ? 1.3 : 1;      // they press harder on an empty gun
     _tmp.x = e.x + e.vx * dt * hunt; _tmp.z = e.z + e.vz * dt * hunt;
     if (e.type === 'boss') { _tmp.x = clamp(_tmp.x, -14, 14); _tmp.z = clamp(_tmp.z, -14, 14); }
+    else if (e.mode === 'rush') { const m = HALF - e.def.r; _tmp.x = clamp(_tmp.x, -m, m); _tmp.z = clamp(_tmp.z, -m, m); }   // a rush goes over cover to a clear spot
     else if (pushOut(_tmp, e.def.r, e.type === 'drone' ? 2 : 0) && e.type === 'charger' && e.mode === 'dash') {
       e.mode = 'recover'; e.modeT = 0; e.stun = 0.4; noise(0.25, 0.15, 800); shake = Math.max(shake, cfg.shake * (0.04));
     }
@@ -2341,13 +2391,13 @@ function updateEnemies(dt) {
     // Never inside the player: the camera would be inside it too.
     const ox = e.x - px, oz = e.z - pz, od = Math.hypot(ox, oz), keep = e.def.r + PLAYER_R + 0.15;
     if (e.type !== 'boss' && e.type !== 'turret' && od < keep && od > 1e-4) { e.x = px + ox / od * keep; e.z = pz + oz / od * keep; }
-    e.y = e.type === 'drone' ? 1.6 + Math.sin(e.t * 3 + e.phase) * 0.25 : e.type === 'boss' ? 3.4 + Math.sin(e.t) * 0.3 + e.slamY : e.type === 'thumper' ? e.hy : 0;
+    e.y = e.type === 'drone' ? 1.6 + Math.sin(e.t * 3 + e.phase) * 0.25 : e.type === 'boss' ? 3.4 + Math.sin(e.t) * 0.3 + e.slamY : 0;
     if (e.type === 'crawler') updateTrail(e);
 
     // Touching the player hurts, once a second; it bounces off.
     const touch = e.def.r + PLAYER_R;
     const reach = e.type === 'crawler' ? 0.7 : e.type === 'drone' ? 2.4 : e.def.y1 - 0.4;     // jumped clear above this
-    if (e.type !== 'charger' && e.type !== 'turret' && dist < touch && e.cool <= 0 && py < reach + e.y * (e.type === 'thumper' ? 1 : 0)) {
+    if (e.type !== 'charger' && e.type !== 'turret' && dist < touch && e.cool <= 0 && py < reach) {
       e.cool = 1;
       damagePlayer(e.type === 'drone' ? 10 : e.type === 'boss' ? 15 : e.type === 'crawler' ? 14 : 18, e.x, e.z);
       e.vx = -nx * 10; e.vz = -nz * 10;
@@ -2383,6 +2433,37 @@ function updateTrail(e) {
     walked += d; ax = p.x; az = p.z;
   }
   for (; k < e.segs.length; k++) { e.segs[k].x = ax; e.segs[k].z = az; }
+}
+
+// A thumper picks a clear spot at the player's side, on the side it comes from, and rushes there.
+function startRush(e) {
+  const d = e.def, m = HALF - d.r - 1, base = Math.atan2(e.x - px, e.z - pz);
+  let spot = null;
+  for (let i = 0; i < 24 && !spot; i++) {
+    const a = base + (i ? (random() * 2 - 1) * (0.6 + i * 0.15) : 0), x = px + Math.sin(a) * d.standOff, z = pz + Math.cos(a) * d.standOff;
+    if (Math.abs(x) < m && Math.abs(z) < m && !nearBox(x, z, d.r + 0.4)) spot = { x, z };
+  }
+  spot ??= { x: clamp(px + d.standOff, -m, m), z: clamp(pz, -m, m) };
+  // The boss leaves company behind where it set off from: none to three of the grid's lesser kind.
+  if (d.boss && enemies.length < 14) {
+    const kinds = sector >= 3 ? ['drone', 'crawler', 'charger'] : ['drone', 'crawler'];
+    for (let i = Math.floor(random() * 4); i > 0; i--) {
+      const at = clearSpotNear(e.x, e.z);
+      if (at) beginSpawn(kinds[Math.floor(random() * kinds.length)], null, { at });
+    }
+  }
+  e.tx = spot.x; e.tz = spot.z;
+  e.mode = 'rush'; e.modeT = 0;
+  noise(0.22, 0.12, 4200);
+  sound(d.boss ? 200 : 300, 0.25, 'sawtooth', d.boss ? 900 : 1200, 0.05);
+}
+function clearSpotNear(x0, z0) {
+  for (let i = 0; i < 30; i++) {
+    const x = x0 + (random() * 2 - 1) * 4, z = z0 + (random() * 2 - 1) * 4;
+    if (Math.abs(x) > HALF - 2 || Math.abs(z) > HALF - 2 || nearBox(x, z, 1.2) || Math.hypot(x - px, z - pz) < 4) continue;
+    return { x, z };
+  }
+  return null;
 }
 
 const BOSS_CYCLE = ['fan', 'slam', 'spiral', 'turrets', 'fan', 'summon', 'slam', 'spiral'];
@@ -2462,13 +2543,13 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
 }
 // ---- shockwaves and the jump warning ------------------------------------------------
 const _quakeColors = new Map();
-function shockwave(x, z, speed, dmg, delay, color) {
+function shockwave(x, z, speed, dmg, delay, color, maxR = 34, r0 = 0.6) {
   const q = quakes.find(q => !q.active);
   if (!q) return;
   let c = _quakeColors.get(color);
   if (!c) { c = DARK ? hot(color, 1.7) : mix(color, '#000000', 0.1); _quakeColors.set(color, c); }
   q.mat.color.copy(c);
-  Object.assign(q, { active: true, x, z, r: 0.6, speed, maxR: 34, delay, hit: false, dmg });
+  Object.assign(q, { active: true, x, z, r: r0, speed, maxR, delay, hit: false, dmg });
   q.band.visible = delay <= 0;
 }
 function clearQuakes() { for (const q of quakes) { q.active = false; q.band.visible = false; } }
@@ -2491,10 +2572,10 @@ function updateQuakes(dt) {
       pvx += (px - q.x) * k; pvz += (pz - q.z) * k;
       if (state !== 'playing') return;
     }
-    if (q.r < d) warnJump((d - q.r - 0.45) / q.speed);
+    if (q.r < d && d < q.maxR + 0.45) warnJump((d - q.r - 0.45) / q.speed);
   }
   // Rings still waiting to start count too, from their start.
-  for (const q of quakes) if (q.active && q.delay > 0) warnJump(q.delay + (Math.hypot(px - q.x, pz - q.z) - q.r - 0.45) / q.speed);
+  for (const q of quakes) if (q.active && q.delay > 0 && Math.hypot(px - q.x, pz - q.z) < q.maxR + 0.45) warnJump(q.delay + (Math.hypot(px - q.x, pz - q.z) - q.r - 0.45) / q.speed);
 }
 function warnJump(t) {
   if (py < 0.7 && t < hazardT) hazardT = Math.max(0, t);
@@ -2747,15 +2828,19 @@ function draw(dt, alpha = 1) {
       p.cage.rotation.y -= live * 0.4; p.cage.rotation.z += live * 0.25;
       const swell = 1 + (e.charge ?? 0) * 0.25;
       p.core.scale.setScalar(swell);
-    } else if (e.type === 'thumper') {
+    } else if (e.type === 'thumper' || e.type === 'thumperBoss') {
       g.rotation.y = face;
-      const crouch = e.mode === 'crouch' ? Math.min(1, e.modeT / 0.6) : e.mode === 'recover' ? Math.max(0, 1 - e.modeT * 3) : 0;
+      // It crouches as it charges, fists raised, then slams them down and stays low while spent.
+      const crouch = e.mode === 'charge' ? e.charge : e.mode === 'cool' ? Math.max(0, 1 - e.modeT * 3) : 0;
       p.body.scale.set(1 + crouch * 0.15, 1 - crouch * 0.3, 1 + crouch * 0.15);
       p.edges.scale.copy(p.body.scale);
       p.body.position.y = p.edges.position.y = 0.95 - crouch * 0.2;
-      const raise = e.mode === 'leap' ? 0.7 : -crouch * 0.35;
+      p.body.rotation.x = p.edges.rotation.x = e.mode === 'rush' ? -0.35 : 0;
+      const raise = e.mode === 'charge' ? e.charge * 0.7 : e.mode === 'cool' ? -0.35 * Math.max(0, 1 - e.modeT * 2) : 0;
       for (const f of p.fists) f.position.y = 0.75 + raise;
-      e.eyeMat.emissiveIntensity = 1 + (e.charge ?? 0) * 4 + e.flash * 2;
+      if (e.def.boss && e.mode === 'cool') e.body.emissiveIntensity += (DARK ? 0.7 : 0.9) + Math.sin(time * 12) * 0.35;   // exposed: it throbs
+      if (p.crown) { p.crown.rotation.z += live * (1 + (e.charge ?? 0) * 8); p.crown.position.y = 2.1 + Math.sin(time * 2) * 0.08; }
+      e.eyeMat.emissiveIntensity = 1 + (e.charge ?? 0) * (e.def.boss ? 1.5 : 2.5) + e.flash * 2;   // the big one's eye would flood the bloom
     } else if (e.type === 'turret') {
       p.head.rotation.y = e.beamA;
       p.ring.rotation.z += live * 4;
@@ -2880,7 +2965,7 @@ function draw(dt, alpha = 1) {
     if (!q.active || q.delay > 0) continue;
     q.band.position.set(q.x, 0, q.z);
     q.band.scale.set(q.r, 1 + Math.sin(time * 25) * 0.08, q.r);
-    q.mat.opacity = Math.min(1, (q.maxR - q.r) / 6) * 0.9;
+    q.mat.opacity = Math.min(1, (q.maxR - q.r) / Math.min(6, q.maxR * 0.35)) * 0.9;   // fades out as it reaches its end
   }
 
   // Particles: skipped entirely, buffers and all, once every spark has died.
@@ -2986,7 +3071,10 @@ function draw(dt, alpha = 1) {
     for (const m of markers) if (m.active) left++;
     txt(ui['enemies-line'], phase === 'fight' ? `${left} HOSTILE${left === 1 ? '' : 'S'}` : phase === 'intro' ? 'INCOMING' : '');
     sty(ui.boss, 'display', bossRef ? 'block' : 'none');
-    if (bossRef) sty(ui['boss-fill'], 'width', pct(clamp(bossRef.hp / bossRef.maxHp, 0, 1)));
+    if (bossRef) {
+      sty(ui['boss-fill'], 'width', pct(clamp(bossRef.hp / bossRef.maxHp, 0, 1)));
+      txt(ui['boss-name'], bossRef.type === 'thumperBoss' && bossRef.mode === 'cool' ? `${ui.bossBase} · EXPOSED ×2` : ui.bossBase);
+    }
 
     // Ammo, the weapon held, and the reload bar under the crosshair with its perfect zone.
     const low = ammo <= mag * 0.25;
@@ -3172,7 +3260,7 @@ function drawRadar() {
       c.beginPath(); c.moveTo(_rx, _ry); c.lineTo(0, 0); c.stroke();
       c.globalAlpha = 1;
     }
-    c.beginPath(); c.arc(_rx, _ry, e.type === 'boss' ? 13 : e.type === 'brute' ? 9 : e.type === 'bulwark' ? 8 : 6, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.arc(_rx, _ry, e.def.boss ? 13 : e.type === 'brute' ? 9 : e.type === 'bulwark' ? 8 : 6, 0, Math.PI * 2); c.fill();
     c.strokeStyle = PALETTE.background; c.lineWidth = 1.5; c.stroke();
   }
   c.fillStyle = PALETTE.green;
