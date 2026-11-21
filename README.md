@@ -37,7 +37,9 @@ Breach then appears in Game Vibes in the app launcher (Super + Space).
 ## What's in it
 
 - **Sectors and Wardens.** Waves of enemies teleport in, with a warning before each one arrives. Clear a sector to pick one of three upgrades. Every fifth sector holds a Warden boss.
-- **Enemies.** Drones, gunners, chargers, brutes that split when killed, crawlers that slither along the ground, lancers that aim a laser before firing, and bulwarks that hide behind shields.
+- **Enemies.** Drones, gunners, chargers, brutes that split when killed, crawlers that slither along the ground, thumpers that leap and slam shockwaves across the floor, lancers that aim a laser before firing, and bulwarks that hide behind shields.
+- **Wardens.** Bosses that fire fans and spirals of shots, summon minions, slam down to send shockwave rings across the arena, and drop turrets that sweep beams along the floor.
+- **Jumping.** Rings and beams that travel along the floor can only be jumped. A JUMP warning closes in under the crosshair as one approaches, and turns red at the moment to jump.
 - **Weapon mods.** Enemies sometimes drop Scatter (a shotgun that loads shell by shell), a Railgun, or Storm (a rapid-fire minigun). A mod lasts until the sector ends, and each has its own crosshair and recoil.
 - **Ammo.** Ammo is limited, and enemies drop more when you run low. When you're completely out, a last-chance reload appears. Miss it, and you have to reach an ammo cache somewhere in the arena while enemies hunt you.
 - **Settings.** Mouse sensitivity, invert Y, field of view, volume, music, screen shake, difficulty, auto reload, bloom and an FPS counter.

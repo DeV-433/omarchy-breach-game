@@ -129,6 +129,15 @@
   #help table { margin: 0; border-spacing: 14px 4px; font-size: 15px; text-align: left; }
   #weapon-name { font-size: 14px; letter-spacing: 3px; font-weight: bold; margin-bottom: 4px; }
   #fps { right: 20px; top: 92px; font-size: 13px; display: none; }
+  /* Jump warning: bars close in on JUMP as a ground attack nears; at the moment to jump it turns red. */
+  #jumpwarn { left: 50%; top: 63%; transform: translateX(-50%); display: none; --jc: var(--yellow); }
+  #jumpwarn.now { --jc: var(--red); }
+  .jw { display: flex; align-items: center; gap: 12px; }
+  .jw i { height: 4px; border-radius: 2px; background: var(--jc); box-shadow: 0 0 10px var(--jc), 0 0 0 1px color-mix(in srgb, var(--background) 50%, transparent); }
+  .jw span { display: flex; flex-direction: column; align-items: center; font-size: 18px; font-weight: bold; letter-spacing: 5px; color: var(--jc); text-shadow: 0 0 8px var(--background), 0 0 14px var(--jc); transition: transform .08s; }
+  #jumpwarn.now .jw span { transform: scale(1.3); }
+  .jw .chev { width: 14px; height: 14px; margin-bottom: -5px; border-left: 4px solid var(--jc); border-top: 4px solid var(--jc); transform: rotate(45deg); filter: drop-shadow(0 0 4px var(--jc)); }
+  #groundglow { left: 0; right: 0; bottom: 0; height: 30vh; opacity: 0; background: linear-gradient(to top, color-mix(in srgb, var(--red) 60%, transparent), transparent); }
   #cachemark { left: 0; top: 0; display: none; text-align: center; font-size: 13px; letter-spacing: 2px; font-weight: bold; color: var(--accent); text-shadow: 0 0 6px var(--background); will-change: transform; white-space: nowrap; }
   #cachemark b { display: block; width: 14px; height: 14px; margin: 0 auto 6px; border: 2px solid var(--accent); transform: rotate(45deg); box-shadow: 0 0 10px var(--accent); }
 </style>
@@ -152,6 +161,8 @@
 <div id="boss" class="layer"><span id="boss-name">WARDEN</span><div class="bar"><b id="boss-fill"></b></div></div>
 <div id="fps" class="layer dim"></div>
 <div id="cachemark" class="layer"><b></b><span></span></div>
+<div id="groundglow" class="layer"></div>
+<div id="jumpwarn" class="layer"><div class="jw"><i id="jw-l"></i><span><b class="chev"></b><b class="chev"></b>JUMP</span><i id="jw-r"></i></div></div>
 <div id="mousehint" class="layer dim">Click to aim with the mouse · or turn with <span class="key">← →</span></div>
 
 <div id="hud">
@@ -226,7 +237,7 @@
       <tr><td class="key">M</td><td>Sound on or off</td></tr>
     </table></div>
   </div>
-  <p class="dim">Enemies may drop weapon mods (Scatter, Railgun, Storm) that last until the sector ends; Scatter loads shell by shell (fire to stop). Ammo is limited: enemies drop more when you run low. Land a jump on enemies to stomp them.</p>
+  <p class="dim">Enemies may drop weapon mods (Scatter, Railgun, Storm) that last until the sector ends; Scatter loads shell by shell (fire to stop). Ammo is limited: enemies drop more when you run low. Land a jump on enemies to stomp them. When JUMP flashes, a shockwave or a turret's beam is about to sweep the floor.</p>
   <p class="dim"><span class="key">↑ ↓</span> choose · <span class="key">← →</span> change · <span class="key">Esc</span> or <span class="key">?</span> to close</p>
 </div></div>
 
@@ -474,6 +485,7 @@ const tint = c => DARK ? col(c) : mix(c, '#000000', 0.12);
 const fmt = n => Math.round(n).toLocaleString();
 const BG = col(PALETTE.background);
 
+const THUMP_COLOR = `#${mix(PALETTE.orange, PALETTE.red, 0.45).getHexString()}`;
 const TYPES = {
   drone:   { color: PALETTE.red,     hp: 22,   speed: 5.2, points: 100,  r: 0.55, hitR: 0.8,  y0: 0.6, y1: 2.6, pool: 40, drop: 0.07, glow: 0.8 },
   gunner:  { color: PALETTE.orange,  hp: 42,   speed: 3.4, points: 150,  r: 0.7,  hitR: 0.9,  y0: 0,   y1: 2.6, pool: 16, drop: 0.15, glow: 0.35 },
@@ -481,6 +493,8 @@ const TYPES = {
   brute:   { color: PALETTE.magenta, hp: 150,  speed: 2.3, points: 350,  r: 1.3,  hitR: 1.5,  y0: 0,   y1: 3.2, pool: 8,  drop: 1,    glow: 0.45 },
   sniper:  { color: PALETTE.cyan,    hp: 30,   speed: 3.2, points: 250,  r: 0.6,  hitR: 0.8,  y0: 0,   y1: 3.4, pool: 8,  drop: 0.2,  glow: 0.55, name: 'LANCERS' },
   crawler: { color: PALETTE.green,   hp: 55,   speed: 6.2, points: 200,  r: 0.5,  hitR: 0.55, y0: 0,   y1: 0.7, pool: 10, drop: 0.12, glow: 0.45, name: 'CRAWLERS', aimY1: 1.8 },
+  thumper: { color: THUMP_COLOR,     hp: 120,  speed: 2.4, points: 300,  r: 1.0,  hitR: 1.15, y0: 0,   y1: 2.4, pool: 8,  drop: 0.3,  glow: 0.45, name: 'THUMPERS' },
+  turret:  { color: PALETTE.red,     hp: 70,   speed: 0,   points: 250,  r: 0.7,  hitR: 0.85, y0: 0,   y1: 1.7, pool: 6,  drop: 0.3,  glow: 0.5 },
   bulwark: { color: PALETTE.blue,    hp: 80,   speed: 2.7, points: 300,  r: 0.9,  hitR: 1.2,  y0: 0,   y1: 2.9, pool: 10, drop: 0.25, glow: 0.4,  name: 'BULWARKS' },
   boss:    { color: PALETTE.red,     hp: 2400, speed: 2.0, points: 5000, r: 3.2,  hitR: 2.6,  y0: 0.8, y1: 6.2, pool: 1,  drop: 0,    glow: 0.4 },
 };
@@ -569,7 +583,7 @@ let purging = false;
 const _from = new THREE.Vector3();
 let musicT = 0, musicStep = 0, time = 0, played = false, booted = false;
 let choices = [], sel = 0, upgradeT = 0, pendingChoice = -1;
-let bossAmmoT = 0, reserve = 0, modReserve = 0, rifleMag = 0, emerg = null, scavenging = false;
+let hazardT = Infinity, bossAmmoT = 0, reserve = 0, modReserve = 0, rifleMag = 0, emerg = null, scavenging = false;
 let adsHeld = false, adsK = 0, kickDebt = 0, sinceShot = 1, shellT = 0;
 let mouseFire = false, wantMouse = false, lockLost = false, lockLostAt = 0;
 let bestSector = saved.get('bestSector', 0);
@@ -583,6 +597,7 @@ const AMMO_COLORS = {};
 let coverMeshes = [], coverEdges = [], halo, halo2, motes, stars;
 const pools = {}, markers = [], bullets = [], tracers = [], pickups = [], popups = [], weaponDrops = [], gunMods = {}, ammoDrops = [];
 const cache = { active: false, x: 0, z: 0, t: 0 };
+const quakes = [];        // shockwave rings rolling across the floor
 let stormSpin;
 let particles, pPos, pCol, pBase, pVel, pLife, pMax, pNext = 0, pAliveT = 0;   // pAliveT: no spark outlives it
 const P_MAX = 1600;
@@ -725,6 +740,27 @@ function build() {
   G.crawlEye = new THREE.SphereGeometry(0.09, 10, 8);
   G.crawlSeg = new THREE.SphereGeometry(0.4, 14, 10);
   G.crawlCage = new THREE.EdgesGeometry(new THREE.OctahedronGeometry(0.5));
+  G.thumpBody = new THREE.CylinderGeometry(0.85, 1.05, 1.3, 8);
+  G.thumpBodyEdges = new THREE.EdgesGeometry(G.thumpBody);
+  G.thumpFist = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  G.thumpFistEdges = new THREE.EdgesGeometry(G.thumpFist);
+  G.turretBase = new THREE.CylinderGeometry(0.45, 0.6, 0.3, 8);
+  G.turretHead = new THREE.BoxGeometry(0.8, 0.3, 0.8);
+  G.turretHeadEdges = new THREE.EdgesGeometry(G.turretHead);
+  G.turretRing = new THREE.TorusGeometry(0.4, 0.04, 6, 28);
+  G.beam = new THREE.CylinderGeometry(0.07, 0.07, 1, 8).rotateX(Math.PI / 2).translate(0, 0, 0.5);   // runs along +Z from its origin
+  G.beamFloor = new THREE.PlaneGeometry(0.6, 1).rotateX(-Math.PI / 2).translate(0, 0, -0.5).scale(1, 1, -1);
+
+  // Shockwave rings: a low glowing band that rolls outward across the floor, to be jumped.
+  G.quake = new THREE.CylinderGeometry(1, 1, 0.55, 80, 1, true).translate(0, 0.275, 0);
+  for (let i = 0; i < 16; i++) {
+    const mat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: DARK ? THREE.AdditiveBlending : THREE.NormalBlending });
+    const band = new THREE.Mesh(G.quake, mat);
+    band.visible = false;
+    band.frustumCulled = false;
+    scene.add(band);
+    quakes.push({ active: false, band, mat, x: 0, z: 0, r: 0, speed: 0, maxR: 0, delay: 0, hit: false, dmg: 0 });
+  }
   const edgeMats = {}, ringMats = {};
   for (const [type, def] of Object.entries(TYPES)) {
     edgeMats[type] = new THREE.LineBasicMaterial({ color: DARK ? hot(def.color, 2.2) : mix(def.color, '#000000', 0.25) });
@@ -936,7 +972,7 @@ function build() {
   // The HUD's live parts.
   for (const id of ['hp-bar', 'hp-text', 'nova-bar', 'nova-text', 'dash-bar', 'combo', 'sector-line', 'enemies-line', 'banner', 'banner-title', 'banner-sub',
     'boss', 'boss-fill', 'boss-name', 'crosshair', 'hitmark', 'vignette', 'flash', 'dmgdir', 'mousehint', 'upgrade', 'cards', 'upgrade-title', 'upgrade-sub', 'title-best', 'best-sector',
-    'ammo', 'ammo-num', 'ammo-max', 'ammo-state', 'reload', 'reload-text', 'reload-bar', 'reload-fill', 'reload-zone', 'reload-cursor', 'weapon-name', 'fps', 'cachemark']) ui[id] = $(id);
+    'ammo', 'ammo-num', 'ammo-max', 'ammo-state', 'reload', 'reload-text', 'reload-bar', 'reload-fill', 'reload-zone', 'reload-cursor', 'weapon-name', 'fps', 'cachemark', 'jumpwarn', 'jw-l', 'jw-r', 'groundglow']) ui[id] = $(id);
   ui.cacheText = ui.cachemark.querySelector('span');
   ui.hpFill = ui['hp-bar'].firstElementChild;
   ui.novaFill = ui['nova-bar'].firstElementChild;
@@ -1131,6 +1167,36 @@ function makeEnemy(type, def, edgeMat, ringMat) {
     }
     e.trail = Array.from({ length: 64 }, () => ({ x: 0, z: 0 }));
     e.trailN = 0; e.trailHead = 0;
+  } else if (type === 'thumper') {
+    e.parts.body = add(new THREE.Mesh(G.thumpBody, body), 0.95);
+    e.parts.edges = add(new THREE.LineSegments(G.thumpBodyEdges, edgeMat), 0.95);
+    e.parts.fists = [];
+    for (const x of [-1.2, 1.2]) {
+      const f = add(new THREE.Mesh(G.thumpFist, body), 0.75), fe = add(new THREE.LineSegments(G.thumpFistEdges, edgeMat), 0.75);
+      f.position.x = fe.position.x = x;
+      e.parts.fists.push(f, fe);
+    }
+    e.eyeMat = new THREE.MeshStandardMaterial({ color: col(PALETTE.foreground), emissive: col(def.color), emissiveIntensity: 1 });
+    e.parts.eye = add(new THREE.Mesh(G.eye, e.eyeMat), 1.4);
+    e.parts.eye.position.z = -0.75;
+  } else if (type === 'turret') {
+    // A low turret the Warden drops into the arena: it sweeps a beam across the floor at knee height.
+    add(new THREE.Mesh(G.turretBase, body), 0.15);
+    e.parts.head = add(new THREE.Group(), 0.45);
+    const head = new THREE.Mesh(G.turretHead, body);
+    head.castShadow = true;
+    e.eyeMat = new THREE.MeshStandardMaterial({ color: col(PALETTE.foreground), emissive: col(def.color), emissiveIntensity: 1.5 });
+    const emitter = new THREE.Mesh(G.eye, e.eyeMat);
+    emitter.position.z = 0.45;
+    emitter.scale.setScalar(0.6);
+    e.parts.head.add(head, new THREE.LineSegments(G.turretHeadEdges, edgeMat), emitter);
+    e.parts.ring = add(new THREE.Mesh(G.turretRing, ringMat), 1.15);
+    e.parts.ring.rotation.x = Math.PI / 2;
+    e.beamMat = new THREE.MeshBasicMaterial({ color: DARK ? hot(def.color, 1.8) : mix(def.color, '#000000', 0.15), transparent: true, depthWrite: false, blending: DARK ? THREE.AdditiveBlending : THREE.NormalBlending });
+    e.floorMat = new THREE.MeshBasicMaterial({ color: col(def.color), transparent: true, opacity: 0.25, depthWrite: false, side: THREE.DoubleSide, blending: DARK ? THREE.AdditiveBlending : THREE.NormalBlending });
+    e.beam = new THREE.Mesh(G.beam, e.beamMat);
+    e.beamFloor = new THREE.Mesh(G.beamFloor, e.floorMat);
+    for (const m of [e.beam, e.beamFloor]) { m.visible = false; m.frustumCulled = false; scene.add(m); e.extra.push(m); }
   } else if (type === 'bulwark') {
     add(new THREE.Mesh(G.bulwark, body), 1.1);
     add(new THREE.LineSegments(G.bulwarkEdges, edgeMat), 1.1);
@@ -1263,7 +1329,7 @@ function rayCyl(ox, oy, oz, dx, dy, dz, cx, cz, r, lo, hi) {
   return Math.max(t0, 0);
 }
 function rayEnemy(ox, oy, oz, dx, dy, dz, e) {
-  const yo = e.type === 'boss' ? e.y - 3.4 : 0, lo = e.def.y0 + yo, hi = (e.def.aimY1 ?? e.def.y1) + yo;
+  const yo = e.type === 'boss' ? e.y - 3.4 : e.type === 'thumper' ? e.y : 0, lo = e.def.y0 + yo, hi = (e.def.aimY1 ?? e.def.y1) + yo;
   let t = rayCyl(ox, oy, oz, dx, dy, dz, e.x, e.z, e.def.hitR, lo, hi);
   if (e.segs) for (const s of e.segs) {
     const u = rayCyl(ox, oy, oz, dx, dy, dz, s.x, s.z, 0.45, lo, hi);
@@ -1331,6 +1397,7 @@ function clearWorld() {
   enemies = [];
   for (const m of markers) { m.active = false; m.group.visible = false; }
   for (const b of bullets) { b.active = false; b.mesh.visible = false; }
+  clearQuakes();
   for (const p of pickups) { p.active = false; p.mesh.visible = false; }
   bossRef = null;
 }
@@ -1349,7 +1416,7 @@ function startSector(n) {
   // A new sector starts with the magazine topped up from the reserve.
   ammo += takeReserve(stats.mag - ammo);
   py = 0; vy = 0; grounded = true; airJumps = stats.airJumps; ppx = px; ppy = 0; ppz = pz; eye = EYE;
-  const fresh = { 2: TYPES.crawler.name, 3: 'CHARGERS', 4: 'BRUTES', 6: TYPES.sniper.name, 7: TYPES.bulwark.name }[n];
+  const fresh = { 2: TYPES.crawler.name, 3: `CHARGERS & ${TYPES.thumper.name}`, 4: 'BRUTES', 6: TYPES.sniper.name, 7: TYPES.bulwark.name }[n];
   banner(`SECTOR ${n}`, n % 5 === 0 ? `${layout.name} · A WARDEN AWAITS` : fresh ? `${layout.name} · NEW: ${fresh}` : layout.name, 2.4);
   if (n > bestSector && booted && played) { bestSector = n; saved.set('bestSector', n); ui.titleBest(); }
   if (state === 'playing') [330, 440, 660].forEach((f, i) => setTimeout(() => sound(f, 0.18, 'square', f * 1.5, 0.05), i * 90));
@@ -1364,10 +1431,11 @@ function buildWave(n, w) {
   if (n >= 4) options.push(['brute', 4, 1.1 + n * 0.05]);
   if (n >= 6) options.push(['sniper', 3, 1.3]);
   if (n >= 7) options.push(['bulwark', 3, 1.6]);
+  if (n >= 3) options.push(['thumper', 4, 0.9 + n * 0.03]);
   const list = [];
   // A newly met enemy turns up in the first wave of its sector, so it is learned early.
   if (w === 1 && n === 2) { list.push('crawler'); budget -= 2; }
-  if (w === 1 && n === 3) { list.push('charger'); budget -= 2; }
+  if (w === 1 && n === 3) { list.push('charger', 'thumper'); budget -= 6; }
   if (w === 1 && n === 4) { list.push('brute'); budget -= 4; }
   if (w === 1 && n === 6) { list.push('sniper', 'sniper'); budget -= 6; }
   if (w === 1 && n === 7) { list.push('bulwark', 'bulwark'); budget -= 6; }
@@ -1406,6 +1474,7 @@ function sectorCleared() {
   banner(`SECTOR ${sector} CLEARED`, `+${fmt(gain)}${flawless ? ' · FLAWLESS' : ''}`, 2.6);
   [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => sound(f, 0.22, 'triangle', f, 0.08), i * 110));
   for (const b of bullets) if (b.active) { b.active = false; b.mesh.visible = false; burst(b.x, b.y, b.z, PALETTE.red, 4, 3, 0.3); }
+  clearQuakes();
 }
 
 function openUpgrade() {
@@ -1479,6 +1548,7 @@ function update(dt) {
   }
   if (phase === 'upgrade') return upgradeInput(dt);
   ppx = px; ppy = py; ppz = pz;          // where the last step left the player, for drawing between steps
+  hazardT = Infinity;                    // the soonest a ground attack reaches the player, for the warning
   phaseT += dt;
   sectorTime += dt;
   runTime += dt;
@@ -1490,6 +1560,8 @@ function update(dt) {
   updateEnemies(dt);
   if (state !== 'playing') return;
   updateBullets(dt);
+  if (state !== 'playing') return;
+  updateQuakes(dt);
   if (state !== 'playing') return;
   updatePickups(dt);
   updateAmmo(dt);
@@ -1872,6 +1944,7 @@ function killEnemy(e) {
 }
 
 function bossDown(e) {
+  e.slamY = 0; e.slammed = false;
   flashT = 1;
   shake = 0.35 * cfg.shake;
   for (let i = 0; i < 6; i++) setTimeout(() => { burst(e.x + (Math.random() - 0.5) * 5, 2 + Math.random() * 4, e.z + (Math.random() - 0.5) * 5, i % 2 ? PALETTE.yellow : PALETTE.red, 60, 12, 1.1); noise(0.6, 0.25, 500); }, i * 140);
@@ -1881,6 +1954,7 @@ function bossDown(e) {
   for (const m of markers) { m.active = false; m.group.visible = false; }
   queue = [];
   for (const b of bullets) if (b.active) { b.active = false; b.mesh.visible = false; }
+  clearQuakes();
   for (let i = 0; i < 4; i++) dropPickup(e.x + (random() - 0.5) * 6, e.z + (random() - 0.5) * 6);
   banner('WARDEN DESTROYED', `+${fmt(e.def.points * comboMult())}`, 2);
 }
@@ -2006,7 +2080,7 @@ const _markerColors = new Map();
 function beginSpawn(type, near, opts = null) {
   const m = markers.find(m => !m.active);
   if (!m) return;
-  const spot = type === 'boss' ? { x: 0, z: -8 } : spawnSpot(type === 'drone' ? 11 : type === 'sniper' ? 17 : 13, near);
+  const spot = type === 'boss' ? { x: 0, z: -8 } : opts?.at ?? spawnSpot(type === 'drone' ? 11 : type === 'sniper' ? 17 : 13, near);
   const c = TYPES[type].color;
   Object.assign(m, { active: true, type, x: spot.x, z: spot.z, t: 0, dur: type === 'boss' ? 2.2 : 1.1, opts });
   let mc = _markerColors.get(c);
@@ -2033,11 +2107,13 @@ function activate(type, x, z, opts) {
     speed: e.def.speed * Math.min(1.45, 1 + 0.035 * (n - 1)),
     attack: null, atkT: 0, atkCool: 2.5, tele: 0, cycle: 0, spiralA: 0, volleys: 0, orb: 0,
     aimY: py + 1.3, lx: x, lz: z, ly: 0, losT: 0, los: false, lunge: 0,
+    hy: 0, jumpV: 0, slamY: 0, slammed: false, beamA: random() * Math.PI * 2, beamDir: random() < 0.5 ? 1 : -1, beamLen: 0, prevD: null,
     aimX: px, aimZ: pz, locked: false, face: Math.atan2(-(px - x), -(pz - z)), shieldHp: 0, shieldMax: 0, shieldFlash: 0,
   });
   if (type === 'sniper') e.fireT = 1.2 + random() * 1.5;
   if (type === 'bulwark') e.shieldHp = e.shieldMax = 70 * hpScale;
   if (type === 'crawler') initCrawler(e);
+  if (type === 'thumper') e.fireT = 2 + random() * 1.5;
   e.group.visible = true;
   e.group.position.set(x, 0, z);
   enemies.push(e);
@@ -2070,7 +2146,7 @@ function updateEnemies(dt) {
     e.pop = Math.max(0, e.pop - dt * 3);
     const dx = px - e.x, dz = pz - e.z, dist = Math.hypot(dx, dz) || 0.001, nx = dx / dist, nz = dz / dist;
     let ax = 0, az = 0;           // where it wants to go, as a velocity
-    if (e.stun > 0) {
+    if (e.stun > 0 && e.mode !== 'leap') {      // a thumper mid-leap still comes down
       e.stun -= dt;
       e.vx = damp(e.vx, 0, 3, dt); e.vz = damp(e.vz, 0, 3, dt);
       if (e.type === 'sniper' && e.mode === 'aim') { e.mode = 'approach'; e.locked = false; e.fireT = 1; }
@@ -2121,6 +2197,57 @@ function updateEnemies(dt) {
           sound(620, 0.1, 'square', 300, 0.035);
           if (++e.volleys >= 3) { e.volleys = 0; e.fireT = 2.6 + random(); } else e.fireT = 0.17;
         } else e.fireT = 0.25;
+      }
+    } else if (e.type === 'thumper') {
+      // Walks in, crouches, leaps and slams: shockwave rings roll out across the floor.
+      e.modeT += dt;
+      if (e.mode === 'approach') {
+        const want = dist > 12 ? 1 : dist < 6 ? -0.6 : 0;
+        ax = nx * want * e.speed; az = nz * want * e.speed;
+        e.vx = damp(e.vx, ax, 3, dt); e.vz = damp(e.vz, az, 3, dt);
+        e.fireT -= dt * rate;
+        if (e.fireT <= 0) { e.mode = 'crouch'; e.modeT = 0; sound(120, 0.6, 'sawtooth', 60, 0.05); }
+      } else if (e.mode === 'crouch') {
+        e.vx = damp(e.vx, 0, 10, dt); e.vz = damp(e.vz, 0, 10, dt);
+        e.charge = e.modeT / 0.6;
+        if (e.modeT > 0.6) { e.mode = 'leap'; e.modeT = 0; e.jumpV = 10; e.charge = 0; noise(0.2, 0.12, 1200); }
+      } else if (e.mode === 'leap') {
+        e.vx = nx * e.speed * 0.8; e.vz = nz * e.speed * 0.8;
+        e.jumpV -= 25 * dt;
+        e.hy += e.jumpV * dt;
+        if (e.hy <= 0 && e.modeT > 0.1) {
+          e.hy = 0; e.vx = e.vz = 0;
+          const rings = n >= 12 ? 3 : n >= 8 ? 2 : 1;
+          for (let i = 0; i < rings; i++) shockwave(e.x, e.z, 8.5 * shotSpeed, 16, i * 0.5, e.def.color);
+          burst(e.x, 0.3, e.z, e.def.color, 40, 8, 0.6);
+          noise(0.5, 0.3, 500);
+          sound(70, 0.5, 'sawtooth', 35, 0.1);
+          shake = Math.max(shake, cfg.shake * (0.12 * Math.max(0.3, 1 - dist / 30)));
+          e.mode = 'recover'; e.modeT = 0;
+        }
+      } else {
+        e.vx = damp(e.vx, 0, 6, dt); e.vz = damp(e.vz, 0, 6, dt);
+        if (e.modeT > 0.9) { e.mode = 'approach'; e.modeT = 0; e.fireT = 3.4 + random() * 1.4; }
+      }
+    } else if (e.type === 'turret') {
+      // Warms up, then sweeps its beam round and round; cover blocks it, and so does being in the air.
+      e.vx = e.vz = 0;
+      e.modeT += dt;
+      const live = e.modeT > 1.4, sweep = (0.85 + 0.02 * n) * e.beamDir;
+      e.beamA += sweep * dt * (live ? 1 : 0.15);
+      const sx = Math.sin(e.beamA), sz = Math.cos(e.beamA);
+      e.beamLen = rayWorld(e.x + sx * 0.5, 0.45, e.z + sz * 0.5, sx, 0, sz, 45) + 0.5;
+      if (live) {
+        let d = Math.atan2(dx, dz) - e.beamA;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        const inReach = dist < e.beamLen + PLAYER_R;
+        if (inReach && py < 0.75 && e.cool <= 0 && e.prevD !== null && Math.sign(d) !== Math.sign(e.prevD) && Math.abs(d) < 0.6) {
+          e.cool = 0.6;
+          damagePlayer(14, e.x, e.z);
+          pvx += nx * 6; pvz += nz * 6;
+        }
+        e.prevD = d;
+        if (inReach && d * e.beamDir > 0) warnJump(d * e.beamDir / Math.abs(sweep));
       }
     } else if (e.type === 'crawler') {
       // Slithers at the player in long S-curves, low to the ground, and lunges when close.
@@ -2199,7 +2326,7 @@ function updateEnemies(dt) {
     }
 
     // Keep apart from each other.
-    for (const o of enemies) {
+    if (e.type !== 'turret') for (const o of enemies) {
       if (o === e || o.type === 'boss') continue;
       const sx = e.x - o.x, sz = e.z - o.z, need = e.def.r + o.def.r + 0.2, d2 = sx * sx + sz * sz;
       if (d2 < need * need && d2 > 1e-6) { const d = Math.sqrt(d2), k = (need - d) / d * 0.5; e.x += sx * k; e.z += sz * k; }
@@ -2213,14 +2340,14 @@ function updateEnemies(dt) {
     e.x = _tmp.x; e.z = _tmp.z;
     // Never inside the player: the camera would be inside it too.
     const ox = e.x - px, oz = e.z - pz, od = Math.hypot(ox, oz), keep = e.def.r + PLAYER_R + 0.15;
-    if (e.type !== 'boss' && od < keep && od > 1e-4) { e.x = px + ox / od * keep; e.z = pz + oz / od * keep; }
-    e.y = e.type === 'drone' ? 1.6 + Math.sin(e.t * 3 + e.phase) * 0.25 : e.type === 'boss' ? 3.4 + Math.sin(e.t) * 0.3 : 0;
+    if (e.type !== 'boss' && e.type !== 'turret' && od < keep && od > 1e-4) { e.x = px + ox / od * keep; e.z = pz + oz / od * keep; }
+    e.y = e.type === 'drone' ? 1.6 + Math.sin(e.t * 3 + e.phase) * 0.25 : e.type === 'boss' ? 3.4 + Math.sin(e.t) * 0.3 + e.slamY : e.type === 'thumper' ? e.hy : 0;
     if (e.type === 'crawler') updateTrail(e);
 
     // Touching the player hurts, once a second; it bounces off.
     const touch = e.def.r + PLAYER_R;
     const reach = e.type === 'crawler' ? 0.7 : e.type === 'drone' ? 2.4 : e.def.y1 - 0.4;     // jumped clear above this
-    if (e.type !== 'charger' && dist < touch && e.cool <= 0 && py < reach) {
+    if (e.type !== 'charger' && e.type !== 'turret' && dist < touch && e.cool <= 0 && py < reach + e.y * (e.type === 'thumper' ? 1 : 0)) {
       e.cool = 1;
       damagePlayer(e.type === 'drone' ? 10 : e.type === 'boss' ? 15 : e.type === 'crawler' ? 14 : 18, e.x, e.z);
       e.vx = -nx * 10; e.vz = -nz * 10;
@@ -2258,7 +2385,7 @@ function updateTrail(e) {
   for (; k < e.segs.length; k++) { e.segs[k].x = ax; e.segs[k].z = az; }
 }
 
-const BOSS_CYCLE = ['fan', 'spiral', 'summon', 'fan', 'spiral', 'fan'];
+const BOSS_CYCLE = ['fan', 'slam', 'spiral', 'turrets', 'fan', 'summon', 'slam', 'spiral'];
 function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
   const enraged = e.hp < e.maxHp * 0.5;
   e.orb += dt * (enraged ? 0.4 : 0.25);
@@ -2300,12 +2427,79 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
       sound(500, 0.15, 'square', 200, 0.05);
       if (e.volleys >= 3) endAttack(e, enraged);
     }
+  } else if (e.attack === 'slam') {
+    // Rises high, then crashes down: rings roll out across the whole floor, one after another.
+    if (e.atkT < 0.7) e.slamY = damp(e.slamY, 3, 6, dt);
+    else if (e.atkT < 0.85) e.slamY = 3 - (e.atkT - 0.7) / 0.15 * 5.2;
+    else if (!e.slammed) {
+      e.slammed = true;
+      e.slamY = -2.2;
+      const rings = enraged ? 4 : 3;
+      for (let i = 0; i < rings; i++) shockwave(e.x, e.z, 10 * shotSpeed, 18, i * 0.42, PALETTE.red);
+      burst(e.x, 0.5, e.z, PALETTE.red, 90, 12, 0.9);
+      noise(0.9, 0.35, 380);
+      sound(55, 0.9, 'sawtooth', 28, 0.12);
+      shake = Math.max(shake, cfg.shake * 0.3);
+      flashT = Math.max(flashT, 0.35);
+    } else {
+      e.slamY = damp(e.slamY, 0, 3, dt);
+      if (e.atkT > 2.4) { e.slammed = false; endAttack(e, enraged); }
+    }
+  } else if (e.attack === 'turrets') {
+    // Turrets drop into the open arena, each sweeping a beam along the floor.
+    let alive = 0;
+    for (const o of enemies) if (o.type === 'turret') alive++;
+    const want = Math.min((enraged ? 3 : 2), 4 - alive);
+    for (let i = 0; i < want; i++) beginSpawn('turret', null, { at: cacheSpot(7, 20) });
+    if (want > 0) { popup('TURRETS INBOUND', 0, 0, 0, PALETTE.red, true); sound(330, 0.5, 'square', 165, 0.05); }
+    else beginSpawn('drone', { x: e.x, z: e.z });
+    endAttack(e, enraged);
   } else if (e.attack === 'summon') {
     const count = enraged ? 4 : 3;
     for (let i = 0; i < count; i++) beginSpawn(i === 0 && sector >= 10 ? 'charger' : 'drone', { x: e.x, z: e.z });
     endAttack(e, enraged);
   }
 }
+// ---- shockwaves and the jump warning ------------------------------------------------
+const _quakeColors = new Map();
+function shockwave(x, z, speed, dmg, delay, color) {
+  const q = quakes.find(q => !q.active);
+  if (!q) return;
+  let c = _quakeColors.get(color);
+  if (!c) { c = DARK ? hot(color, 1.7) : mix(color, '#000000', 0.1); _quakeColors.set(color, c); }
+  q.mat.color.copy(c);
+  Object.assign(q, { active: true, x, z, r: 0.6, speed, maxR: 34, delay, hit: false, dmg });
+  q.band.visible = delay <= 0;
+}
+function clearQuakes() { for (const q of quakes) { q.active = false; q.band.visible = false; } }
+function updateQuakes(dt) {
+  for (const q of quakes) {
+    if (!q.active) continue;
+    if (q.delay > 0) {
+      q.delay -= dt;
+      if (q.delay <= 0) { q.band.visible = true; noise(0.3, 0.16, 500); }
+      continue;
+    }
+    q.r += q.speed * dt;
+    if (q.r > q.maxR) { q.active = false; q.band.visible = false; continue; }
+    const d = Math.hypot(px - q.x, pz - q.z);
+    // It hits whoever is on the ground as it rolls past; on cover or in the air, it passes beneath.
+    if (!q.hit && Math.abs(d - q.r) < 0.45 + PLAYER_R * 0.6 && py < 0.55) {
+      q.hit = true;
+      damagePlayer(q.dmg, q.x, q.z);
+      const k = 7 / Math.max(d, 0.1);
+      pvx += (px - q.x) * k; pvz += (pz - q.z) * k;
+      if (state !== 'playing') return;
+    }
+    if (q.r < d) warnJump((d - q.r - 0.45) / q.speed);
+  }
+  // Rings still waiting to start count too, from their start.
+  for (const q of quakes) if (q.active && q.delay > 0) warnJump(q.delay + (Math.hypot(px - q.x, pz - q.z) - q.r - 0.45) / q.speed);
+}
+function warnJump(t) {
+  if (py < 0.7 && t < hazardT) hazardT = Math.max(0, t);
+}
+
 function endAttack(e, enraged) {
   e.attack = null;
   e.atkCool = enraged ? 1.4 : 2.2;
@@ -2553,6 +2747,26 @@ function draw(dt, alpha = 1) {
       p.cage.rotation.y -= live * 0.4; p.cage.rotation.z += live * 0.25;
       const swell = 1 + (e.charge ?? 0) * 0.25;
       p.core.scale.setScalar(swell);
+    } else if (e.type === 'thumper') {
+      g.rotation.y = face;
+      const crouch = e.mode === 'crouch' ? Math.min(1, e.modeT / 0.6) : e.mode === 'recover' ? Math.max(0, 1 - e.modeT * 3) : 0;
+      p.body.scale.set(1 + crouch * 0.15, 1 - crouch * 0.3, 1 + crouch * 0.15);
+      p.edges.scale.copy(p.body.scale);
+      p.body.position.y = p.edges.position.y = 0.95 - crouch * 0.2;
+      const raise = e.mode === 'leap' ? 0.7 : -crouch * 0.35;
+      for (const f of p.fists) f.position.y = 0.75 + raise;
+      e.eyeMat.emissiveIntensity = 1 + (e.charge ?? 0) * 4 + e.flash * 2;
+    } else if (e.type === 'turret') {
+      p.head.rotation.y = e.beamA;
+      p.ring.rotation.z += live * 4;
+      const warm = e.modeT < 1.4, sx = Math.sin(e.beamA), sz = Math.cos(e.beamA), len = Math.max(0.1, e.beamLen - 0.5);
+      e.beam.position.set(e.x + sx * 0.5, 0.45, e.z + sz * 0.5);
+      e.beamFloor.position.set(e.x + sx * 0.5, 0.03, e.z + sz * 0.5);
+      for (const m of [e.beam, e.beamFloor]) { m.rotation.y = e.beamA; m.scale.z = len; m.visible = true; }
+      // Warming up, the beam flickers faintly where it will sweep; live, it burns.
+      e.beamMat.opacity = warm ? (Math.sin(time * 30) > 0 ? 0.3 : 0.1) : 0.85 + Math.sin(time * 40) * 0.1;
+      e.floorMat.opacity = warm ? 0.08 : 0.28;
+      e.eyeMat.emissiveIntensity = (warm ? 1.5 + Math.sin(time * 20) : 3.5) + e.flash * 2;
     } else if (e.type === 'crawler') {
       g.rotation.y = e.face;
       for (let k = 0; k < e.segs.length; k++) {
@@ -2660,6 +2874,13 @@ function draw(dt, alpha = 1) {
     cache.box.position.y = 0.9 + Math.sin(time * 2.5) * 0.15;
     cache.box.rotation.y += live * 1.2;
     cache.ring.scale.setScalar(2.2 + Math.sin(time * 6) * 0.2);
+  }
+
+  for (const q of quakes) {
+    if (!q.active || q.delay > 0) continue;
+    q.band.position.set(q.x, 0, q.z);
+    q.band.scale.set(q.r, 1 + Math.sin(time * 25) * 0.08, q.r);
+    q.mat.opacity = Math.min(1, (q.maxR - q.r) / 6) * 0.9;
   }
 
   // Particles: skipped entirely, buffers and all, once every spark has died.
@@ -2830,6 +3051,17 @@ function draw(dt, alpha = 1) {
   sty(ui.fps, 'display', cfg.fps ? 'block' : 'none');
   if (cfg.fps) txt(ui.fps, `${fpsVal} FPS`);
 
+  // The jump warning: bars close in on JUMP as a ring or a beam nears; red is the moment to jump.
+  const warnOn = state === 'playing' && phase !== 'upgrade' && hazardT < 0.9;
+  sty(ui.jumpwarn, 'display', warnOn ? 'block' : 'none');
+  sty(ui.groundglow, 'opacity', op(warnOn ? 0.25 + (1 - hazardT / 0.9) * 0.55 : 0));
+  if (warnOn) {
+    cls(ui.jumpwarn, 'now', hazardT < 0.22);
+    const w = `${Math.round(18 + 140 * hazardT / 0.9)}px`;
+    sty(ui['jw-l'], 'width', w);
+    sty(ui['jw-r'], 'width', w);
+  }
+
   // The ammo cache's marker: on it when in view, pinned to the screen's edge when not.
   const showCache = cache.active && state === 'playing';
   sty(ui.cachemark, 'display', showCache ? 'block' : 'none');
@@ -2913,6 +3145,21 @@ function drawRadar() {
   }
   c.fillStyle = PALETTE.red;
   for (const b of bullets) { if (b.active) { plot(b.x, b.z); c.fillRect(_rx - 2, _ry - 2, 4, 4); } }
+  // Rings rolling out, and turret beams sweeping, so ground attacks can be read from the radar too.
+  c.strokeStyle = PALETTE.red;
+  c.lineWidth = 2;
+  for (const q of quakes) {
+    if (!q.active || q.delay > 0) continue;
+    plot(q.x, q.z);
+    c.beginPath(); c.arc(_rx, _ry, q.r * k, 0, Math.PI * 2); c.stroke();
+  }
+  for (const e of enemies) {
+    if (e.type !== 'turret' || e.modeT < 1.4) continue;
+    plot(e.x + Math.sin(e.beamA) * e.beamLen, e.z + Math.cos(e.beamA) * e.beamLen);
+    const ex = _rx, ey = _ry;
+    plot(e.x, e.z);
+    c.beginPath(); c.moveTo(_rx, _ry); c.lineTo(ex, ey); c.stroke();
+  }
   for (const e of enemies) {
     c.fillStyle = e.def.color;
     if (e.segs) for (const sg of e.segs) { plot(sg.x, sg.z); c.fillRect(_rx - 2.5, _ry - 2.5, 5, 5); }
