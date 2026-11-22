@@ -235,7 +235,7 @@
       <tr><td class="key">Mouse</td><td>Aim (click the game to capture it)</td></tr>
       <tr><td class="key">← → / ↑ ↓</td><td>Turn / move, for keyboard-only play</td></tr>
       <tr><td class="key">Click / F</td><td>Fire (hold)</td></tr>
-      <tr><td class="key">Space</td><td>Jump: onto low cover, over rings and crawlers</td></tr>
+      <tr><td class="key">Space</td><td>Jump: onto low cover, over rings and crawlers' bites</td></tr>
       <tr><td class="key">R</td><td>Reload; R again in the zone for a perfect one</td></tr>
       <tr><td class="key">Shift</td><td>Dash, untouchable while dashing</td></tr>
       <tr><td class="key">Right click</td><td>Aim down sights (hold): zoom, steadier aim</td></tr>
@@ -441,14 +441,9 @@ function sound(freq = 440, seconds = 0.1, type = 'square', slideTo = freq, volum
 function noise(seconds = 0.15, volume = 0.2, tone = 2000) {
   if (_muted || _audio?.state !== 'running') return;
   // One long buffer of noise, made once and played from a random point, rather than a new one per sound.
-  if (!_noise) {
-    _noise = _audio.createBuffer(1, _audio.sampleRate * 2, _audio.sampleRate);
-    const data = _noise.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-  }
   const t = _audio.currentTime, length = Math.min(seconds, 1.9);
   const source = _audio.createBufferSource(), filter = _audio.createBiquadFilter(), gain = _audio.createGain();
-  source.buffer = _noise;
+  source.buffer = _noiseBuf();
   filter.type = 'lowpass';
   filter.frequency.value = tone;
   gain.gain.setValueAtTime(volume, t);
@@ -456,6 +451,266 @@ function noise(seconds = 0.15, volume = 0.2, tone = 2000) {
   source.connect(filter).connect(gain).connect(_out());
   source.start(t, Math.random() * (2 - length), length);
 }
+
+// ---- futuristic sound effects ---------------------------------------------------------
+// Every effect is built from two voices. zap is an oscillator that glides in pitch, optionally
+// FM-modulated (metallic, laser-like), detuned against a twin (wide, synthetic), warbled by an LFO
+// (buzzing, alarms) and swept through a resonant filter. hiss is noise through a resonant band
+// sweep: whooshes, energy, static. A short digital echo gives the bigger ones space.
+let _fx = null;
+function _fxBus() {
+  if (!_fx) {
+    const a = _audio, d = a.createDelay(0.5), fb = a.createGain(), hp = a.createBiquadFilter(), lp = a.createBiquadFilter(), ret = a.createGain();
+    _fx = a.createGain();
+    d.delayTime.value = 0.095; fb.gain.value = 0.34; ret.gain.value = 0.55;
+    hp.type = 'highpass'; hp.frequency.value = 450; lp.type = 'lowpass'; lp.frequency.value = 5200;
+    _fx.connect(hp).connect(d); d.connect(lp).connect(fb).connect(d); lp.connect(ret).connect(_out());
+  }
+  return _fx;
+}
+function _noiseBuf() {
+  if (!_noise) {
+    _noise = _audio.createBuffer(1, _audio.sampleRate * 2, _audio.sampleRate);
+    const data = _noise.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  }
+  return _noise;
+}
+const _live = () => !_muted && _audio?.state === 'running';
+function _voiceOut(g, t, vol, atk, end, wet) {
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + atk);
+  g.gain.exponentialRampToValueAtTime(0.0001, end);
+  g.connect(_out());
+  if (wet) { const w = _audio.createGain(); w.gain.value = wet; g.connect(w).connect(_fxBus()); }
+}
+function _sweep(param, from, to, t, end) { param.setValueAtTime(from, t); param.exponentialRampToValueAtTime(Math.max(1, to), end); }
+function zap(o) {
+  if (!_live()) return;
+  const a = _audio, t = a.currentTime + (o.at ?? 0), dur = o.dur ?? 0.12, end = t + dur, f = o.f ?? 440, to = Math.max(1, o.to ?? f);
+  const g = a.createGain(), nodes = [];
+  _voiceOut(g, t, o.vol ?? 0.04, Math.min(o.atk ?? 0.003, dur * 0.5), end, o.wet);
+  let into = g;
+  if (o.q) {
+    const flt = a.createBiquadFilter();
+    flt.type = o.ftype ?? 'lowpass'; flt.Q.value = o.q;
+    _sweep(flt.frequency, o.ff ?? f * 4, o.fto ?? to * 4, t, end);
+    flt.connect(g); into = flt;
+  }
+  for (const det of o.det ? [-o.det, o.det] : [0]) {
+    const osc = a.createOscillator();
+    osc.type = o.type ?? 'square';
+    osc.detune.value = det;
+    _sweep(osc.frequency, f, to, t, end);
+    osc.connect(into); nodes.push(osc);
+    if (o.fm) {
+      const m = a.createOscillator(), mg = a.createGain(), k = o.fmd ?? 1;
+      _sweep(m.frequency, f * o.fm, to * o.fm, t, end);
+      _sweep(mg.gain, f * k, to * k, t, end);
+      m.connect(mg).connect(osc.frequency); nodes.push(m);
+    }
+    if (o.lfo) {
+      const l = a.createOscillator(), lg = a.createGain();
+      l.frequency.value = o.lfo; lg.gain.value = f * (o.lfod ?? 0.05);
+      l.connect(lg).connect(osc.frequency); nodes.push(l);
+    }
+  }
+  for (const n of nodes) { n.start(t); n.stop(end + 0.02); }
+}
+function hiss(o) {
+  if (!_live()) return;
+  const a = _audio, t = a.currentTime + (o.at ?? 0), dur = Math.min(o.dur ?? 0.15, 1.9), end = t + dur;
+  const src = a.createBufferSource(), flt = a.createBiquadFilter(), g = a.createGain();
+  src.buffer = _noiseBuf();
+  flt.type = o.ftype ?? 'bandpass'; flt.Q.value = o.q ?? 1.2;
+  _sweep(flt.frequency, o.ff ?? 3000, o.fto ?? o.ff ?? 3000, t, end);
+  _voiceOut(g, t, o.vol ?? 0.1, Math.min(o.atk ?? 0.003, dur * 0.5), end, o.wet);
+  src.connect(flt).connect(g);
+  src.start(t, Math.random() * (2 - dur), dur);
+}
+// FM bells, struck one after another: the chimes of the interface and of rewards.
+function chime(notes, gap, vol, wet = 0.4) {
+  for (let i = 0; i < notes.length; i++) zap({ f: notes[i], to: notes[i] * 0.995, dur: 0.32, type: 'sine', fm: 3.5, fmd: 0.9, vol, wet, at: i * gap, atk: 0.002 });
+}
+// Effects that can fire many times a frame (pellets, storm hits) play at most once per interval.
+const _sfxAt = {};
+function due(key, seconds) {
+  const t = performance.now();
+  if (t - (_sfxAt[key] ?? -1e9) < seconds * 1000) return false;
+  _sfxAt[key] = t;
+  return true;
+}
+const SFX = {
+  // The interface
+  tick: (hi = 0) => zap({ f: 1500 + hi * 250, to: 1800 + hi * 250, dur: 0.045, type: 'sine', fm: 3, fmd: 0.35, vol: 0.035 }),
+  confirm: () => {
+    zap({ f: 440, to: 880, dur: 0.1, type: 'square', det: 8, q: 4, ff: 700, fto: 5000, vol: 0.04, wet: 0.3 });
+    zap({ f: 880, to: 1760, dur: 0.18, type: 'sine', fm: 2, fmd: 0.6, vol: 0.045, wet: 0.45, at: 0.08 });
+  },
+  upgradeOpen: () => { chime([880, 1320, 1760], 0.07, 0.03); hiss({ ff: 3000, fto: 9000, q: 8, dur: 0.4, vol: 0.03, wet: 0.4 }); },
+  sectorStart: () => { chime([660, 880, 1320], 0.09, 0.035); zap({ f: 110, to: 220, dur: 0.4, type: 'sawtooth', det: 12, q: 6, ff: 200, fto: 2500, vol: 0.04 }); },
+  waveStart: () => zap({ f: 220, to: 440, dur: 0.3, type: 'sawtooth', det: 10, q: 6, ff: 400, fto: 4000, vol: 0.035, wet: 0.3 }),
+  sectorClear: () => {
+    chime([523, 659, 784, 1047, 1568], 0.09, 0.045);
+    hiss({ ff: 2000, fto: 10000, q: 6, dur: 0.7, vol: 0.05, wet: 0.5 });
+    zap({ f: 130, to: 520, dur: 0.6, type: 'sawtooth', det: 14, q: 8, ff: 300, fto: 6000, vol: 0.035, wet: 0.3 });
+  },
+  bossIncoming: () => {
+    zap({ f: 55, to: 45, dur: 1.8, type: 'sawtooth', det: 14, q: 8, ff: 150, fto: 1400, lfo: 5, lfod: 0.04, vol: 0.12, atk: 0.3 });
+    for (let i = 0; i < 3; i++) zap({ f: 620, to: 440, dur: 0.24, type: 'square', q: 3, ff: 3000, fto: 900, lfo: 14, lfod: 0.04, vol: 0.04, at: i * 0.32, wet: 0.3 });
+  },
+  // The player
+  step: k => { zap({ f: k ? 105 : 92, to: 60, dur: 0.06, type: 'triangle', vol: 0.03 }); hiss({ ff: 3500, fto: 1800, q: 5, dur: 0.035, vol: 0.012 }); },
+  dash: () => { hiss({ ff: 500, fto: 6000, q: 5, dur: 0.24, vol: 0.14, wet: 0.2 }); zap({ f: 200, to: 1300, dur: 0.18, type: 'sine', fm: 0.5, fmd: 2, vol: 0.04 }); },
+  dashReady: () => zap({ f: 1900, to: 2500, dur: 0.05, type: 'sine', fm: 3, fmd: 0.3, vol: 0.015 }),
+  jump: air => { zap({ f: air ? 420 : 260, to: air ? 1500 : 950, dur: 0.15, type: 'sine', fm: 2, fmd: 0.8, vol: 0.045 }); hiss({ ff: 1500, fto: 4500, q: 3, dur: 0.12, vol: air ? 0.08 : 0.04 }); },
+  land: k => { hiss({ ff: 900, fto: 180, q: 1, dur: 0.13, vol: 0.05 + k * 0.12 }); zap({ f: 170, to: 55, dur: 0.09, type: 'square', q: 3, ff: 900, fto: 200, vol: 0.012 + k * 0.03 }); },
+  stomp: () => {
+    zap({ f: 320, to: 40, dur: 0.35, type: 'sawtooth', det: 20, q: 6, ff: 3000, fto: 100, vol: 0.09 });
+    zap({ f: 90, to: 30, dur: 0.4, type: 'sine', vol: 0.14 });
+    hiss({ ff: 2500, fto: 150, q: 1.5, dur: 0.3, vol: 0.16 });
+  },
+  denied: () => zap({ f: 160, to: 150, dur: 0.13, type: 'square', lfo: 35, lfod: 0.3, q: 3, ff: 1200, fto: 600, vol: 0.035 }),
+  dryClick: () => { zap({ f: 2600, to: 1900, dur: 0.025, type: 'square', vol: 0.025 }); zap({ f: 140, to: 130, dur: 0.08, type: 'square', lfo: 35, lfod: 0.3, q: 3, ff: 900, fto: 500, vol: 0.02, at: 0.02 }); },
+  lowAmmo: () => zap({ f: 2700, to: 2700, dur: 0.03, type: 'sine', vol: 0.014 }),
+  // Guns
+  rifle: over => {
+    zap({ f: 1300, to: 220, dur: 0.085, type: 'square', fm: 1.5, fmd: 0.7, q: 3, ff: 6000, fto: 800, vol: 0.038 });
+    hiss({ ff: 6500, fto: 3000, q: 2, dur: 0.03, vol: 0.03 });
+    if (over) zap({ f: 2600, to: 700, dur: 0.1, type: 'sine', fm: 2.5, fmd: 0.5, vol: 0.022 });
+  },
+  scatter: () => {
+    hiss({ ff: 3200, fto: 280, q: 1.5, dur: 0.26, vol: 0.2 });
+    zap({ f: 520, to: 50, dur: 0.2, type: 'sawtooth', det: 25, q: 4, ff: 4000, fto: 200, vol: 0.07 });
+    zap({ f: 1900, to: 300, dur: 0.12, type: 'sine', fm: 0.5, fmd: 1.5, vol: 0.03 });
+  },
+  rail: () => {
+    zap({ f: 140, to: 2600, dur: 0.05, type: 'sine', vol: 0.035 });
+    zap({ f: 3200, to: 70, dur: 0.5, type: 'sawtooth', det: 10, fm: 0.5, fmd: 2, q: 6, ff: 9000, fto: 200, vol: 0.065, wet: 0.45, at: 0.03 });
+    hiss({ ff: 9000, fto: 800, q: 3, dur: 0.4, vol: 0.12, wet: 0.3, at: 0.03 });
+  },
+  storm: () => { zap({ f: 1700, to: 520, dur: 0.04, type: 'square', fm: 2.01, fmd: 0.4, vol: 0.026 }); hiss({ ff: 7000, fto: 4000, q: 2, dur: 0.02, vol: 0.02 }); },
+  wallHit: () => zap({ f: 3200, to: 1500, dur: 0.035, type: 'sine', fm: 1.41, fmd: 1, vol: 0.012 }),
+  // Reloading
+  reloadStart: () => { hiss({ ff: 3200, fto: 600, q: 4, dur: 0.1, vol: 0.09 }); zap({ f: 900, to: 200, dur: 0.18, type: 'sine', fm: 1.5, fmd: 0.6, vol: 0.035 }); },
+  shell: () => { hiss({ ff: 4200, fto: 2000, q: 6, dur: 0.045, vol: 0.07 }); zap({ f: 480, to: 950, dur: 0.07, type: 'sine', fm: 2, fmd: 0.5, vol: 0.035 }); },
+  lockIn: () => {
+    hiss({ ff: 3600, fto: 1800, q: 5, dur: 0.05, vol: 0.1 });
+    hiss({ ff: 5000, fto: 2500, q: 5, dur: 0.04, vol: 0.08, at: 0.08 });
+    zap({ f: 400, to: 1500, dur: 0.13, type: 'sine', fm: 2, fmd: 0.5, vol: 0.035, at: 0.06 });
+  },
+  jam: () => { hiss({ ff: 1300, fto: 900, q: 10, dur: 0.18, vol: 0.12 }); zap({ f: 110, to: 90, dur: 0.3, type: 'sawtooth', lfo: 40, lfod: 0.4, q: 4, ff: 900, fto: 300, vol: 0.06 }); },
+  perfect: () => {
+    zap({ f: 880, to: 3520, dur: 0.25, type: 'sine', fm: 3, fmd: 1, vol: 0.05, wet: 0.5 });
+    chime([1760, 2640], 0.07, 0.03);
+  },
+  weaponSpent: () => zap({ f: 900, to: 60, dur: 0.55, type: 'sawtooth', det: 15, q: 5, ff: 4000, fto: 100, lfo: 12, lfod: 0.06, vol: 0.05, wet: 0.3 }),
+  outOfAmmo: () => { for (let i = 0; i < 2; i++) zap({ f: 880, to: 440, dur: 0.2, type: 'square', q: 3, ff: 3000, fto: 800, lfo: 16, lfod: 0.05, vol: 0.05, at: i * 0.26 }); },
+  restore: () => {
+    zap({ f: 110, to: 880, dur: 0.4, type: 'sawtooth', det: 12, q: 8, ff: 300, fto: 6000, vol: 0.05, wet: 0.4 });
+    chime([1047, 1568, 2093], 0.08, 0.04);
+  },
+  powerFail: () => {
+    zap({ f: 400, to: 40, dur: 0.9, type: 'sawtooth', det: 20, lfo: 8, lfod: 0.1, q: 6, ff: 3000, fto: 80, vol: 0.08, wet: 0.3 });
+    hiss({ ff: 1500, fto: 200, q: 1, dur: 0.5, vol: 0.12 });
+  },
+  // Hitting things
+  hit: crit => {
+    zap({ f: crit ? 2200 : 1500, to: crit ? 2700 : 1100, dur: 0.04, type: 'triangle', fm: 2.5, fmd: 0.5, vol: 0.03 });
+    if (crit) zap({ f: 3500, to: 3480, dur: 0.18, type: 'sine', fm: 3.5, fmd: 0.5, vol: 0.025, wet: 0.3 });
+  },
+  shieldHit: () => zap({ f: 2400, to: 1900, dur: 0.09, type: 'sine', fm: 3.7, fmd: 0.8, vol: 0.035 }),
+  shieldBreak: () => {
+    hiss({ ff: 8000, fto: 600, q: 4, dur: 0.45, vol: 0.16, wet: 0.3 });
+    zap({ f: 1600, to: 90, dur: 0.4, type: 'sawtooth', lfo: 30, lfod: 0.15, q: 6, ff: 5000, fto: 200, vol: 0.05 });
+    chime([2600, 1900, 1300], 0.05, 0.025);
+  },
+  streak: () => {
+    zap({ f: 330, to: 1320, dur: 0.3, type: 'sawtooth', det: 14, q: 6, ff: 600, fto: 7000, vol: 0.045, wet: 0.4 });
+    chime([1320, 1760, 2640], 0.07, 0.035);
+  },
+  kill: big => {
+    hiss({ ff: big ? 2500 : 5000, fto: big ? 150 : 400, q: 3, dur: big ? 0.7 : 0.3, vol: big ? 0.25 : 0.15 });
+    zap({ f: big ? 600 : 1200, to: big ? 35 : 80, dur: big ? 0.6 : 0.25, type: 'square', fm: 0.5, fmd: 3, q: 5, ff: 5000, fto: 200, vol: 0.055, wet: big ? 0.3 : 0.12 });
+    if (big) zap({ f: 90, to: 30, dur: 0.6, type: 'sine', vol: 0.12 });
+  },
+  boom: () => {
+    hiss({ ff: 1600, fto: 100, q: 1.5, dur: 0.6, vol: 0.22 });
+    zap({ f: 200, to: 30, dur: 0.6, type: 'sawtooth', det: 20, q: 4, ff: 1500, fto: 80, vol: 0.07, wet: 0.3 });
+  },
+  hurt: () => {
+    zap({ f: 420, to: 70, dur: 0.22, type: 'sawtooth', lfo: 45, lfod: 0.25, q: 4, ff: 3000, fto: 300, vol: 0.07 });
+    hiss({ ff: 1200, fto: 200, q: 1, dur: 0.22, vol: 0.2 });
+  },
+  die: () => {
+    zap({ f: 660, to: 25, dur: 1.6, type: 'sawtooth', det: 25, lfo: 7, lfod: 0.08, q: 8, ff: 5000, fto: 60, vol: 0.1, wet: 0.5 });
+    zap({ f: 2000, to: 40, dur: 1.1, type: 'sine', fm: 0.5, fmd: 1, vol: 0.04 });
+    hiss({ ff: 4000, fto: 100, q: 1, dur: 1.3, vol: 0.3 });
+  },
+  nova: () => {
+    zap({ f: 70, to: 28, dur: 0.9, type: 'sine', vol: 0.18 });
+    zap({ f: 180, to: 2200, dur: 0.35, type: 'sawtooth', det: 15, fm: 0.5, fmd: 1.5, q: 8, ff: 400, fto: 9000, vol: 0.06, wet: 0.5 });
+    hiss({ ff: 300, fto: 8000, q: 3, dur: 0.5, vol: 0.2, wet: 0.4 });
+    zap({ f: 2200, to: 150, dur: 0.6, type: 'sine', fm: 3, fmd: 1, vol: 0.04, wet: 0.5, at: 0.3 });
+  },
+  novaReady: () => { chime([1320, 1980, 2640], 0.06, 0.03); zap({ f: 600, to: 1200, dur: 0.2, type: 'sine', fm: 2, fmd: 0.5, vol: 0.03 }); },
+  // Pickups
+  heal: () => { chime([660, 990, 1320], 0.05, 0.035); zap({ f: 400, to: 1200, dur: 0.2, type: 'sine', fm: 2, fmd: 0.5, vol: 0.03 }); },
+  ammoDrop: () => { hiss({ ff: 6000, fto: 600, q: 5, dur: 0.5, vol: 0.06, wet: 0.3 }); chime([1400, 1050], 0.1, 0.03); },
+  ammoPickup: () => {
+    hiss({ ff: 4000, fto: 2000, q: 5, dur: 0.05, vol: 0.09 });
+    zap({ f: 600, to: 1500, dur: 0.12, type: 'square', q: 5, ff: 2000, fto: 7000, vol: 0.032 });
+    chime([1760], 0, 0.025);
+  },
+  weaponDrop: () => zap({ f: 400, to: 1600, dur: 0.32, type: 'sine', fm: 2, fmd: 1, lfo: 12, lfod: 0.03, vol: 0.035, wet: 0.4 }),
+  equip: () => {
+    zap({ f: 110, to: 880, dur: 0.3, type: 'sawtooth', det: 12, q: 8, ff: 300, fto: 6000, vol: 0.05, wet: 0.3 });
+    chime([880, 1320, 1760], 0.06, 0.04);
+  },
+  // Warnings
+  jumpWarn: () => { for (let i = 0; i < 2; i++) zap({ f: 1200, to: 1600, dur: 0.07, type: 'square', q: 4, ff: 3000, fto: 5000, vol: 0.028, at: i * 0.1 }); },
+  jumpNow: () => zap({ f: 2000, to: 2700, dur: 0.1, type: 'square', fm: 2, fmd: 0.3, vol: 0.04 }),
+  whiz: () => { zap({ f: 1500, to: 480, dur: 0.18, type: 'sine', lfo: 30, lfod: 0.03, vol: 0.028 }); hiss({ ff: 5200, fto: 1400, q: 6, dur: 0.15, vol: 0.05 }); },
+  // Enemies
+  spawnMark: big => zap({ f: big ? 60 : 300, to: big ? 240 : 1200, dur: big ? 2 : 0.5, type: 'sine', fm: 1.5, fmd: 0.5, lfo: big ? 6 : 18, lfod: 0.04, vol: big ? 0.05 : 0.025, wet: 0.4 }),
+  spawnIn: () => { hiss({ ff: 6000, fto: 1200, q: 5, dur: 0.14, vol: 0.06 }); zap({ f: 1800, to: 300, dur: 0.12, type: 'sine', fm: 2.7, fmd: 0.8, vol: 0.03 }); },
+  crash: () => { hiss({ ff: 900, fto: 150, q: 1, dur: 0.25, vol: 0.15 }); zap({ f: 130, to: 40, dur: 0.2, type: 'square', fm: 0.5, fmd: 2, vol: 0.04 }); },
+  enemyShot: (pitch = 1) => zap({ f: 900 * pitch, to: 260 * pitch, dur: 0.11, type: 'square', fm: 1.5, fmd: 0.6, q: 3, ff: 4000, fto: 600, vol: 0.033 }),
+  sniperAim: dur => zap({ f: 600, to: 1800, dur, type: 'sine', lfo: 24, lfod: 0.02, vol: 0.022 }),
+  sniperLock: () => { for (let i = 0; i < 2; i++) zap({ f: 2000, to: 2000, dur: 0.05, type: 'sine', fm: 2, fmd: 0.3, vol: 0.035, at: i * 0.07 }); },
+  sniperFire: () => {
+    zap({ f: 4000, to: 200, dur: 0.25, type: 'sawtooth', det: 8, q: 6, ff: 10000, fto: 400, vol: 0.06, wet: 0.4 });
+    hiss({ ff: 9000, fto: 2000, q: 3, dur: 0.15, vol: 0.1 });
+  },
+  chargerWind: () => zap({ f: 120, to: 900, dur: 0.75, type: 'sawtooth', det: 12, q: 8, ff: 300, fto: 4000, lfo: 14, lfod: 0.04, vol: 0.035 }),
+  chargerDash: () => { hiss({ ff: 800, fto: 5000, q: 4, dur: 0.3, vol: 0.12 }); zap({ f: 900, to: 300, dur: 0.3, type: 'sawtooth', q: 4, ff: 4000, fto: 900, vol: 0.025 }); },
+  bruteRing: () => { zap({ f: 300, to: 80, dur: 0.35, type: 'square', fm: 0.5, fmd: 2, lfo: 20, lfod: 0.1, vol: 0.05 }); hiss({ ff: 1500, fto: 300, dur: 0.3, vol: 0.12 }); },
+  biteHiss: () => {
+    hiss({ ff: 5000, fto: 7500, q: 8, dur: 0.3, vol: 0.08 });
+    zap({ f: 2200, to: 1600, dur: 0.3, type: 'sawtooth', lfo: 55, lfod: 0.15, q: 6, ff: 6000, fto: 4000, vol: 0.02 });
+  },
+  biteSnap: () => { zap({ f: 1400, to: 200, dur: 0.08, type: 'square', fm: 0.5, fmd: 2, vol: 0.06 }); hiss({ ff: 4000, fto: 1000, q: 3, dur: 0.06, vol: 0.12 }); },
+  rush: boss => {
+    hiss({ ff: 1000, fto: 7000, q: 6, dur: 0.25, vol: 0.1 });
+    zap({ f: boss ? 150 : 250, to: boss ? 1200 : 1800, dur: 0.22, type: 'sine', fm: 1.5, fmd: 1, vol: 0.04, wet: 0.3 });
+  },
+  thumpCharge: (boss, T) => {
+    zap({ f: boss ? 80 : 130, to: boss ? 520 : 700, dur: T, type: 'sawtooth', det: 15, q: 10, ff: 200, fto: 5000, lfo: 12, lfod: 0.05, vol: 0.05 });
+    hiss({ ff: 400, fto: 3000, q: 6, dur: T, vol: 0.05, atk: T * 0.8 });
+  },
+  quakeBlast: boss => {
+    hiss({ ff: 2500, fto: 120, q: 1.2, dur: boss ? 0.9 : 0.5, vol: boss ? 0.32 : 0.22 });
+    zap({ f: boss ? 60 : 85, to: 25, dur: boss ? 0.85 : 0.45, type: 'sine', vol: boss ? 0.16 : 0.12 });
+    zap({ f: 900, to: 60, dur: 0.4, type: 'sawtooth', fm: 0.5, fmd: 3, q: 4, ff: 6000, fto: 200, vol: 0.05, wet: 0.4 });
+  },
+  exposed: () => zap({ f: 800, to: 180, dur: 0.6, type: 'sine', fm: 1.5, fmd: 0.5, lfo: 10, lfod: 0.05, vol: 0.045, wet: 0.4 }),
+  quakeRoll: () => { hiss({ ff: 800, fto: 150, q: 1, dur: 0.3, vol: 0.12 }); zap({ f: 90, to: 40, dur: 0.3, type: 'sine', vol: 0.06 }); },
+  bossTele: () => zap({ f: 100, to: 500, dur: 0.6, type: 'sawtooth', det: 10, q: 8, ff: 200, fto: 3000, lfo: 9, lfod: 0.04, vol: 0.05, wet: 0.3 }),
+  spiral: () => zap({ f: 700, to: 400, dur: 0.06, type: 'sine', fm: 2, fmd: 0.5, vol: 0.02 }),
+  fan: () => zap({ f: 900, to: 180, dur: 0.16, type: 'square', det: 12, fm: 1.5, fmd: 0.5, q: 4, ff: 5000, fto: 500, vol: 0.045 }),
+  turretsInbound: () => { for (let i = 0; i < 4; i++) zap({ f: i % 2 ? 740 : 990, to: i % 2 ? 740 : 990, dur: 0.14, type: 'square', q: 3, ff: 3500, fto: 1500, vol: 0.035, at: i * 0.16 }); },
+  turretLive: () => zap({ f: 200, to: 1600, dur: 0.3, type: 'sawtooth', q: 10, ff: 500, fto: 6000, vol: 0.03, wet: 0.3 }),
+};
 
 const $ = id => document.getElementById(id);
 let state = 'title', score = 0, best = saved.get('best', null), shake = 0;
@@ -525,7 +780,7 @@ const UPGRADES = [
   { id: 'cap',    name: 'Capacitor',    desc: 'Nova charges 40% faster and hits 30% harder.',       max: 4,  apply: s => { s.novaGain *= 1.4; s.novaDmg *= 1.3; } },
   { id: 'jets',   name: 'Jump Jets',    desc: 'Jump once more in mid-air.',                          max: 2,  apply: s => { s.airJumps += 1; } },
   { id: 'repair', name: 'Field Repair', desc: 'Repair 60 integrity right now.',                     max: 99, apply: s => { hp = Math.min(s.maxHp, hp + 60); } },
-  // Ammo cards: one is always offered after a sector, until both are maxed.
+  // Ammo cards: one is offered after every other sector (1, 3, 5…), until both are maxed.
   { id: 'mag',    name: 'Extended Mag', desc: '+8 rounds in every magazine.',                       max: 8,  ammo: true, apply: s => { s.mag += 8; } },
   { id: 'loader', name: 'Speed Loader', desc: 'Reload 20% faster, and the perfect zone widens.',    max: 4,  ammo: true, apply: s => { s.reload *= 0.8; s.perfect += 0.03; } },
 ];
@@ -597,7 +852,7 @@ let purging = false;
 const _from = new THREE.Vector3();
 let musicT = 0, musicStep = 0, time = 0, played = false, booted = false;
 let choices = [], sel = 0, upgradeT = 0, pendingChoice = -1;
-let hazardT = Infinity, bossAmmoT = 0, reserve = 0, modReserve = 0, rifleMag = 0, emerg = null, scavenging = false;
+let _warnLvl = 0, hazardT = Infinity, bossAmmoT = 0, reserve = 0, modReserve = 0, rifleMag = 0, emerg = null, scavenging = false;
 let adsHeld = false, adsK = 0, kickDebt = 0, sinceShot = 1, shellT = 0;
 let mouseFire = false, wantMouse = false, lockLost = false, lockLostAt = 0;
 let bestSector = saved.get('bestSector', 0);
@@ -809,7 +1064,7 @@ function build() {
     m.add(new THREE.Mesh(G.bulletHalo, bulletHalo));
     m.visible = false;
     scene.add(m);
-    bullets.push({ active: false, mesh: m, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, dmg: 0, r: 0.28 });
+    bullets.push({ active: false, mesh: m, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, dmg: 0, r: 0.28, whiz: 99 });
   }
 
   // Player tracers.
@@ -1087,7 +1342,7 @@ function screenInput(code) {
   if (code !== 'KeyR' || state !== 'title' || !loadRuns().length) return false;
   runsShown = !runsShown;
   ui.titleBest();
-  sound(runsShown ? 660 : 520, 0.05, 'triangle', runsShown ? 880 : 440, 0.04);
+  SFX.tick(runsShown ? 1 : 0);
   return true;
 }
 
@@ -1160,7 +1415,7 @@ function makeEnemy(type, def, edgeMat, ringMat) {
     x: 0.5, z: 0.5, y: 0.5, vx: 0.5, vz: 0.5, hp: 0.5, maxHp: 0.5, t: 0.5, phase: 0.5, flash: 0.5, cool: 0.5, stun: 0.5, pop: 0.5, side: 1, sideT: 0.5,
     fireT: 0.5, charge: 0.5, mode: 'approach', modeT: 0.5, dirX: 0.5, dirZ: 0.5, hitPlayer: false, speed: 0.5,
     attack: null, atkT: 0.5, atkCool: 0.5, tele: 0.5, cycle: 0, spiralA: 0.5, volleys: 0, orb: 0.5,
-    aimY: 0.5, lx: 0.5, lz: 0.5, ly: 0.5, losT: 0.5, los: false, lunge: 0.5, tx: 0.5, tz: 0.5, coolFor: 0.5, slamY: 0.5, slammed: false,
+    aimY: 0.5, lx: 0.5, lz: 0.5, ly: 0.5, losT: 0.5, los: false, lunge: 0.5, bite: 0.5, tx: 0.5, tz: 0.5, coolFor: 0.5, slamY: 0.5, slammed: false,
     beamA: 0.5, beamDir: 1, beamLen: 0.5, prevD: NaN, aimX: 0.5, aimZ: 0.5, locked: false, face: 0.5, shieldHp: 0.5, shieldMax: 0.5, shieldFlash: 0.5 };
   const add = (obj, y = 0) => { obj.position.y = y; if (obj.isMesh) obj.castShadow = true; g.add(obj); return obj; };
   if (type === 'drone') {
@@ -1196,7 +1451,7 @@ function makeEnemy(type, def, edgeMat, ringMat) {
     e.parts.head = add(new THREE.Mesh(G.crawlHead, body), 0.42);
     e.parts.headEdges = add(new THREE.LineSegments(G.crawlHeadEdges, edgeMat), 0.42);
     e.eyeMat = new THREE.MeshStandardMaterial({ color: col(PALETTE.foreground), emissive: col(def.color), emissiveIntensity: 1 });
-    for (const x of [-0.17, 0.17]) add(new THREE.Mesh(G.crawlEye, e.eyeMat), 0.62).position.set(x, 0.62, 0.1);
+    e.parts.eyes = [-0.17, 0.17].map(x => { const m = add(new THREE.Mesh(G.crawlEye, e.eyeMat), 0.62); m.position.set(x, 0.62, 0.1); return m; });
     e.segs = []; e.segMeshes = []; e.segCages = [];
     for (let k = 0; k < 9; k++) {
       const sc = 1 - k * 0.07, m = new THREE.Mesh(G.crawlSeg, body), c = new THREE.LineSegments(G.crawlCage, edgeMat);
@@ -1473,7 +1728,7 @@ function startSector(n) {
   const fresh = { 2: TYPES.crawler.name, 3: 'CHARGERS', 4: 'BRUTES', 6: `${TYPES.sniper.name} & ${TYPES.thumper.name}`, 7: TYPES.bulwark.name }[n];
   banner(`SECTOR ${n}`, n % 5 === 0 ? `${layout.name} · ${n % 10 === 0 ? 'THE THUMPER' : 'A WARDEN'} AWAITS` : fresh ? `${layout.name} · NEW: ${fresh}` : layout.name, 2.4);
   if (n > bestSector && booted && played) { bestSector = n; saved.set('bestSector', n); ui.titleBest(); }
-  if (state === 'playing') [330, 440, 660].forEach((f, i) => setTimeout(() => sound(f, 0.18, 'square', f * 1.5, 0.05), i * 90));
+  if (state === 'playing') SFX.sectorStart();
 }
 
 function buildWave(n, w) {
@@ -1510,11 +1765,11 @@ function startWave(w) {
     const thumper = sector % 10 === 0;
     queue.push({ type: thumper ? 'thumperBoss' : 'boss', at: 0.3 });
     banner(thumper ? 'THUMPER INBOUND' : 'WARDEN INBOUND', `MK-${roman(bossMark(sector))}`, 2.2);
-    sound(70, 1.2, 'sawtooth', 40, 0.12);
+    SFX.bossIncoming();
   } else {
     let t = 0;
     buildWave(sector, w).forEach((type, i) => { queue.push({ type, at: t }); t += i % 4 === 3 ? 1.8 : 0.3; });
-    if (w > 1) banner(`WAVE ${w} / ${waves}`, '', 1.4);
+    if (w > 1) { banner(`WAVE ${w} / ${waves}`, '', 1.4); SFX.waveStart(); }
   }
 }
 const bossMark = n => n % 10 === 0 ? n / 10 : (n + 5) / 10;
@@ -1529,7 +1784,7 @@ function sectorCleared() {
   giveReserve(stats.mag);            // a magazine's worth for the next sector
   scavenging = false; emerg = null;
   banner(`SECTOR ${sector} CLEARED`, `+${fmt(gain)}${flawless ? ' · FLAWLESS' : ''}`, 2.6);
-  [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => sound(f, 0.22, 'triangle', f, 0.08), i * 110));
+  SFX.sectorClear();
   for (const b of bullets) if (b.active) { b.active = false; b.mesh.visible = false; burst(b.x, b.y, b.z, PALETTE.red, 4, 3, 0.3); }
   clearQuakes();
 }
@@ -1539,8 +1794,8 @@ function openUpgrade() {
   const open = UPGRADES.filter(u => (levels[u.id] ?? 0) < u.max && u.id !== 'repair');
   const ammoCards = open.filter(u => u.ammo), options = open.filter(u => !u.ammo);
   choices = [];
-  // The first card is always ammo, while there is any left to take.
-  if (ammoCards.length) choices.push(ammoCards[Math.floor(random() * ammoCards.length)]);
+  // The first card is ammo after every other sector, while there is any left to take.
+  if (ammoCards.length && sector % 2 === 1) choices.push(ammoCards[Math.floor(random() * ammoCards.length)]);
   while (choices.length < 2 && options.length) choices.push(options.splice(Math.floor(random() * options.length), 1)[0]);
   // The third card is a repair when hurt, otherwise another upgrade.
   const repair = UPGRADES.find(u => u.id === 'repair');
@@ -1570,7 +1825,7 @@ function openUpgrade() {
   ui.upgrade.classList.add('show');
   mouseFire = false;
   if (ui.locked()) document.exitPointerLock();
-  sound(880, 0.12, 'triangle', 1320, 0.06);
+  SFX.upgradeOpen();
 }
 function markSelected() {
   [...ui.cards.children].forEach((b, i) => b.classList.toggle('sel', i === sel));
@@ -1583,15 +1838,14 @@ function upgradeInput(dt) {
   pendingChoice = -1;
   ['pick1', 'pick2', 'pick3'].forEach((a, i) => { if (wasPressed(a) && i < choices.length) choice = i; });
   const step = (wasPressed('right') || wasPressed('turnRight') ? 1 : 0) - (wasPressed('left') || wasPressed('turnLeft') ? 1 : 0);
-  if (step) { sel = (sel + step + choices.length) % choices.length; markSelected(); sound(600, 0.04, 'triangle', 600, 0.04); }
+  if (step) { sel = (sel + step + choices.length) % choices.length; markSelected(); SFX.tick(); }
   if (wasPressed('action')) choice = sel;
   if (choice < 0) return;
   const u = choices[choice];
   levels[u.id] = (levels[u.id] ?? 0) + 1;
   u.apply(stats);
   ui.upgrade.classList.remove('show');
-  sound(440, 0.1, 'square', 880, 0.07);
-  setTimeout(() => sound(880, 0.16, 'square', 1760, 0.06), 90);
+  SFX.confirm();
   startSector(sector + 1);
 }
 
@@ -1639,13 +1893,13 @@ function updatePlayer(dt) {
   const ml = hyp(mx, mz);
   if (ml > 0) { mx /= ml; mz /= ml; }
   moving = ml > 0;
+  if (dashCd > 0 && dashCd - dt <= 0 && state === 'playing') SFX.dashReady();
   dashCd -= dt;
   if (wasPressed('dash') && dashCd <= 0) {
     dashT = 0.17;
     dashCd = stats.dashCool;
     [dashDX, dashDZ] = ml > 0 ? [mx, mz] : [-sy, -cy];
-    noise(0.18, 0.14, 3500);
-    sound(300, 0.15, 'sine', 900, 0.05);
+    SFX.dash();
   }
   if (dashT > 0) {
     dashT -= dt;
@@ -1660,7 +1914,13 @@ function updatePlayer(dt) {
   pushOut(_tmp, PLAYER_R, py + STEP_UP);        // cover below the feet is stood on, not walked into
   px = _tmp.x; pz = _tmp.z;
   updateJump(dt);
-  if (moving && grounded) walkT += dt;
+  if (moving && grounded) {
+    // A footstep at each low point of the head bob: a servo thud.
+    const s0 = Math.floor(walkT * 10 / Math.PI + 0.5);
+    walkT += dt;
+    const s1 = Math.floor(walkT * 10 / Math.PI + 0.5);
+    if (s1 !== s0 && dashT <= 0) SFX.step(s1 & 1);
+  }
   invuln -= dt;
 }
 
@@ -1680,8 +1940,7 @@ function updateJump(dt) {
     if (air) { airJumps--; burst(px, py + 0.1, pz, PALETTE.cyan, 14, 3, 0.4); }
     vy = JUMP_V * (air ? 0.9 : 1);
     grounded = false; coyote = 0; jumpBuf = 0;
-    sound(air ? 520 : 380, 0.12, 'sine', air ? 900 : 640, 0.05);
-    noise(0.06, 0.06, 2200);
+    SFX.jump(air);
   }
   const fall = vy;
   vy -= GRAVITY * dt;
@@ -1696,7 +1955,7 @@ function updateJump(dt) {
 function land(speed) {
   if (speed > -4) return;
   landT = Math.min(1, -speed / 14);
-  noise(0.12, 0.08 + landT * 0.1, 700);
+  SFX.land(landT);
   burst(px, py + 0.05, pz, PALETTE.foreground, 8 + Math.round(landT * 10), 3, 0.35);
   shake = Math.max(shake, cfg.shake * (0.05 * landT));
   if (speed > -8) return;
@@ -1710,7 +1969,7 @@ function land(speed) {
   if (!stomped) return;
   popup('STOMP', px, py + 0.4, pz, PALETTE.yellow);
   burst(px, py + 0.1, pz, PALETTE.yellow, 36, 7, 0.5);
-  sound(90, 0.3, 'sawtooth', 40, 0.08);
+  SFX.stomp();
   shake = Math.max(shake, cfg.shake * (0.12));
 }
 
@@ -1726,7 +1985,7 @@ function updateWeapon(dt) {
     kickDebt = next < 1e-4 ? 0 : next;
   }
   if (wasPressed('nova')) {
-    if (nova >= 1) fireNova(); else sound(180, 0.08, 'square', 140, 0.04);
+    if (nova >= 1) fireNova(); else SFX.denied();
   }
   if (scavenging && (ammo > 0 || reserveNow() > 0)) scavenging = false;     // ammo found another way
   if (emerg) { emergencyStep(dt); heat = Math.max(0, heat - dt * 1.5); return; }
@@ -1737,9 +1996,8 @@ function updateWeapon(dt) {
       reloadT = 0;
       ammo += takeReserve(1);
       shellT = 1;
-      noise(0.05, 0.12, 2800);
-      sound(300, 0.05, 'square', 240, 0.03);
-      if (ammo >= magSize() || reserveNow() <= 0) { reloading = false; noise(0.12, 0.16, 1400); setTimeout(() => noise(0.1, 0.14, 1900), 110); }
+      SFX.shell();
+      if (ammo >= magSize() || reserveNow() <= 0) { reloading = false; SFX.lockIn(); }
     }
   } else if (reloading) {
     reloadT += dt;
@@ -1757,9 +2015,10 @@ function updateWeapon(dt) {
     if (ammo > 0) {
       fireCool = stats.fireInterval * (W()?.rate ?? 1);
       shoot();
-      if (--ammo <= 0 && cfg.autoReload) startReload();
+      if (--ammo <= 0) { if (cfg.autoReload) startReload(); }
+      else if (ammo <= magSize() * 0.25) SFX.lowAmmo();          // the last quarter of a magazine ticks
     } else if (cfg.autoReload) startReload();
-    else { fireCool = 0.3; sound(900, 0.03, 'square', 700, 0.03); }     // a dry click: R to reload
+    else { fireCool = 0.3; SFX.dryClick(); }     // a dry click: R to reload
   }
   heat = firing && !reloading ? Math.min(1, heat + dt * 1.2) : Math.max(0, heat - dt * 1.5);
 }
@@ -1769,7 +2028,7 @@ function spendWeapon() {
   weapon = null;
   ammo = rifleMag;
   reloading = false; overcharged = false;
-  sound(300, 0.2, 'triangle', 150, 0.05);
+  SFX.weaponSpent();
   if (ammo <= 0 && reserve > 0 && cfg.autoReload) startReload();
 }
 
@@ -1779,8 +2038,7 @@ function startEmergency() {
   emerg = { t: 0, k: 0, zone: 0.15 + random() * (0.7 - EMERG_W) };
   reloading = false;
   popup('OUT OF AMMO', 0, 0, 0, PALETTE.red, true);
-  sound(220, 0.22, 'square', 110, 0.07);
-  setTimeout(() => sound(220, 0.22, 'square', 110, 0.07), 260);
+  SFX.outOfAmmo();
 }
 function emergencyStep(dt) {
   emerg.t += dt;
@@ -1799,7 +2057,7 @@ function restoreAmmo(title) {
   popup(title, 0, 0, 0, PALETTE.accent, true);
   flashT = Math.max(flashT, 0.3);
   burst(px, py + 1.2, pz, PALETTE.accent, 40, 6, 0.6);
-  [523, 784, 1047].forEach((f, i) => setTimeout(() => sound(f, 0.16, 'triangle', f * 1.5, 0.06), i * 80));
+  SFX.restore();
 }
 function failEmergency() {
   emerg = null;
@@ -1808,8 +2066,7 @@ function failEmergency() {
   Object.assign(cache, { active: true, x: spot.x, z: spot.z, t: 0 });
   cache.group.visible = true;
   popup('FIND THE AMMO CACHE', 0, 0, 0, PALETTE.red, true);
-  noise(0.4, 0.2, 600);
-  sound(160, 0.6, 'sawtooth', 55, 0.08);
+  SFX.powerFail();
   // And they come for you.
   if (phase === 'fight') for (const t of ['crawler', 'crawler', 'drone', 'drone']) beginSpawn(t);
 }
@@ -1833,8 +2090,7 @@ function startReload() {
   // Shell by shell: each shell takes this long, and there is no perfect reload to hit.
   if (shellReload()) { reloadDur = reloadTime() * 0.28; reloadTried = true; }
   ammo = Math.max(0, ammo);
-  noise(0.06, 0.12, 2600);
-  sound(360, 0.07, 'square', 180, 0.035);
+  SFX.reloadStart();
 }
 function tryPerfectReload() {
   reloadTried = true;
@@ -1842,20 +2098,17 @@ function tryPerfectReload() {
   if (reloadT >= z0 && reloadT <= z1) { finishReload(true); return; }
   reloadDur += 0.6;
   jamT = 1;
-  noise(0.12, 0.16, 900);
-  sound(140, 0.25, 'square', 90, 0.06);
+  SFX.jam();
 }
 function finishReload(perfect) {
   reloading = false;
   ammo += takeReserve(magSize() - ammo);
-  noise(0.05, 0.14, 3200);
-  setTimeout(() => noise(0.04, 0.12, 4200), 70);
-  if (!perfect) { sound(520, 0.06, 'square', 700, 0.03); return; }
+  SFX.lockIn();
+  if (!perfect) return;
   overcharged = true;
   perfects++;
   popup('PERFECT RELOAD', 0, 0, 0, PALETTE.yellow, true);
-  sound(880, 0.12, 'triangle', 1760, 0.07);
-  setTimeout(() => sound(1320, 0.18, 'triangle', 2640, 0.06), 80);
+  SFX.perfect();
 }
 
 function muzzlePoint(out) {
@@ -1867,10 +2120,10 @@ function shoot() {
   const w = W();
   recoil = (w?.kick ?? 1) * (1 - adsK * 0.4);
   muzzleT = 1;
-  if (!w) { sound(260, 0.07, 'square', 90, 0.045); noise(0.05, 0.06, 3500); }
-  else if (weapon === 'scatter') { noise(0.22, 0.22, 1600); sound(140, 0.16, 'sawtooth', 50, 0.07); }
-  else if (weapon === 'rail') { sound(1400, 0.4, 'sawtooth', 90, 0.06); noise(0.3, 0.14, 5000); flashT = Math.max(flashT, 0.15); }
-  else { sound(480, 0.04, 'square', 220, 0.03); noise(0.03, 0.05, 4500); }
+  if (!w) SFX.rifle(overcharged);
+  else if (weapon === 'scatter') SFX.scatter();
+  else if (weapon === 'rail') { SFX.rail(); flashT = Math.max(flashT, 0.15); }
+  else SFX.storm();
   const from = muzzlePoint(_from);
   const spread = w?.pellets > 1, count = spread ? w.pellets + (stats.bolts - 1) * 2 : stats.bolts;
   const dmgBase = stats.damage * (w?.dmg ?? 1) * (overcharged ? OVERCHARGE : 1), pierce = w?.pierce ?? stats.pierce, rail = weapon === 'rail';
@@ -1903,7 +2156,7 @@ function shoot() {
     }
     const ex = px + dx * end, ey = eye + dy * end, ez = pz + dz * end;
     tracer(from, ex, ey, ez, color, w?.thick ?? 1);
-    if (left > 0 && end < 80) burst(ex, ey, ez, color, spread ? 2 : 5, 4, 0.3);
+    if (left > 0 && end < 80) { burst(ex, ey, ez, color, spread ? 2 : 5, 4, 0.3); if (end < 30 && due('wall', 0.06)) SFX.wallHit(); }
   }
   // Recoil, after the shot: the aim kicks up (less once it has already climbed far) and a little sideways.
   const r = w ?? RIFLE_RECOIL, k = 1 - adsK * 0.4;
@@ -1925,7 +2178,7 @@ function hitShield(e, amount, x, y, z) {
   e.shieldHp -= amount;
   e.shieldFlash = 1;
   burst(x, y, z, e.def.color, 5, 5, 0.3);
-  sound(1900, 0.05, 'triangle', 1400, 0.03);
+  if (due('shield', 0.04)) SFX.shieldHit();
   if (e.shieldHp <= 0) breakShield(e);
 }
 function breakShield(e) {
@@ -1933,8 +2186,7 @@ function breakShield(e) {
   e.stun = Math.max(e.stun, 0.6);
   burst(e.x - Math.sin(e.face) * 1.3, 1.5, e.z - Math.cos(e.face) * 1.3, e.def.color, 50, 7, 0.7);
   popup('SHIELD DOWN', e.x, 3, e.z, PALETTE.blue);
-  noise(0.4, 0.2, 2400);
-  sound(900, 0.35, 'sawtooth', 160, 0.05);
+  SFX.shieldBreak();
 }
 
 const _tracerColors = new Map();
@@ -1963,7 +2215,7 @@ function damageEnemy(e, amount, crit, x, y, z) {
   hitT = 1;
   ui.hitmark.classList.toggle('crit', crit || exposed);
   burst(x, y, z, crit ? PALETTE.yellow : e.def.color, crit ? 8 : 4, 5, 0.35);
-  sound(crit ? 1600 : 1100, 0.035, 'square', crit ? 2000 : 900, 0.03);
+  if (due(crit ? 'crit' : 'hit', 0.03)) SFX.hit(crit);
   if (crit) popup('CRIT', x, y + 0.6, z, PALETTE.yellow);
   if (e.hp <= 0) killEnemy(e);
 }
@@ -1975,18 +2227,19 @@ function killEnemy(e) {
   removeEnemy(e);
   combo++;
   comboT = 3;
-  if (STREAKS[combo]) { popup(STREAKS[combo], 0, 0, 0, PALETTE.yellow, true); sound(660, 0.3, 'square', 1320, 0.06); }
+  if (STREAKS[combo]) { popup(STREAKS[combo], 0, 0, 0, PALETTE.yellow, true); SFX.streak(); }
   const gain = Math.round(e.def.points * comboMult() * (1 + (sector - 1) * 0.1));
   score += gain;
   kills++;
   popup(`+${fmt(gain)}`, e.x, e.y + 1.2, e.z, PALETTE.accent);
+  const charged = nova >= 1;
   nova = Math.min(1, nova + stats.novaGain * (e.type === 'brute' ? 2.5 : 1));
+  if (!charged && nova >= 1 && !purging) SFX.novaReady();
   hp = Math.min(stats.maxHp, hp + stats.leech);
   const big = e.type === 'brute' || e.def.boss;
   burst(e.x, e.y + (e.type === 'drone' ? 0 : 1), e.z, e.def.color, big ? 80 : 32, big ? 11 : 8, 0.9);
   burst(e.x, e.y + 1, e.z, PALETTE.foreground, big ? 16 : 6, big ? 14 : 10, 0.35);
-  noise(big ? 0.7 : 0.3, big ? 0.3 : 0.2, big ? 700 : 1400);
-  sound(big ? 160 : 320, big ? 0.5 : 0.22, 'sawtooth', 50, 0.07);
+  if (big || due('kill', 0.04)) SFX.kill(big);
   shake = Math.max(shake, cfg.shake * (big ? 0.2 : 0.06));
   if (random() < e.def.drop) dropPickup(e.x, e.z);
   // Ammo drops grow likely as the rifle's supply runs low; none while a cache is the way out.
@@ -2007,7 +2260,7 @@ function bossDown(e) {
   e.slamY = 0; e.slammed = false;
   flashT = 1;
   shake = 0.35 * cfg.shake;
-  for (let i = 0; i < 6; i++) setTimeout(() => { burst(e.x + (Math.random() - 0.5) * 5, 2 + Math.random() * 4, e.z + (Math.random() - 0.5) * 5, i % 2 ? PALETTE.yellow : PALETTE.red, 60, 12, 1.1); noise(0.6, 0.25, 500); }, i * 140);
+  for (let i = 0; i < 6; i++) setTimeout(() => { burst(e.x + (Math.random() - 0.5) * 5, 2 + Math.random() * 4, e.z + (Math.random() - 0.5) * 5, i % 2 ? PALETTE.yellow : PALETTE.red, 60, 12, 1.1); SFX.boom(); }, i * 140);
   purging = true;
   for (const other of [...enemies]) killEnemy(other);
   purging = false;
@@ -2037,16 +2290,14 @@ function damagePlayer(amount, fromX, fromZ) {
   shake = Math.max(shake, cfg.shake * (0.14));
   dmgT = 1;
   dmgAngle = Math.atan2(fromX - px, fromZ - pz);
-  noise(0.25, 0.3, 600);
-  sound(160, 0.2, 'sawtooth', 60, 0.08);
+  SFX.hurt();
   if (hp <= 0) die();
 }
 
 function die() {
   hp = 0;
   burst(px, 1, pz, PALETTE.accent, 120, 10, 1.2);
-  noise(1.2, 0.35, 400);
-  sound(220, 1.2, 'sawtooth', 30, 0.1);
+  SFX.die();
   if (sector > bestSector) { bestSector = sector; saved.set('bestSector', sector); }
   const acc = shots ? Math.round(Math.min(hits, shots) / shots * 100) : 0;
   // Keep the run: the best eight by score, and a career tally.
@@ -2072,9 +2323,7 @@ function fireNova() {
   novaT = 1; novaX = px; novaZ = pz;
   shake = 0.3 * cfg.shake;
   flashT = 0.6;
-  noise(0.9, 0.35, 900);
-  sound(110, 0.9, 'sawtooth', 35, 0.12);
-  sound(880, 0.4, 'sine', 220, 0.06);
+  SFX.nova();
   for (const e of [...enemies]) {
     const d = hyp(e.x - px, e.z - pz);
     if (d > 14) continue;
@@ -2108,7 +2357,7 @@ function updateDirector(dt) {
       const e = activate(m.type, m.x, m.z, m.opts);
       if (e) {
         burst(m.x, 1.2, m.z, TYPES[m.type].color, 30, 7, 0.6);
-        sound(520, 0.12, 'triangle', 260, 0.04);
+        if (due('spawn', 0.05)) SFX.spawnIn();
       }
     }
   }
@@ -2152,7 +2401,7 @@ function beginSpawn(type, near, opts = null) {
   m.group.position.set(spot.x, 0, spot.z);
   m.group.scale.setScalar(big ? 3 : type === 'brute' ? 1.6 : 1);
   m.group.visible = true;
-  sound(big ? 90 : 220, big ? 2 : 0.5, 'sine', big ? 180 : 660, 0.035);
+  if (big || due('mark', 0.08)) SFX.spawnMark(big);
 }
 
 function activate(type, x, z, opts) {
@@ -2168,7 +2417,7 @@ function activate(type, x, z, opts) {
     fireT: 1.4 + random() * 1.4, charge: 0, mode: 'approach', modeT: 0, dirX: 0, dirZ: 0, hitPlayer: false,
     speed: e.def.speed * Math.min(1.45, 1 + 0.035 * (n - 1)),
     attack: null, atkT: 0, atkCool: 2.5, tele: 0, cycle: 0, spiralA: 0, volleys: 0, orb: 0,
-    aimY: py + 1.3, lx: x, lz: z, ly: 0, losT: 0, los: false, lunge: 0,
+    aimY: py + 1.3, lx: x, lz: z, ly: 0, losT: 0, los: false, lunge: 0, bite: 0,
     tx: x, tz: z, coolFor: 0, slamY: 0, slammed: false, beamA: random() * Math.PI * 2, beamDir: random() < 0.5 ? 1 : -1, beamLen: 0, prevD: NaN,
     aimX: px, aimZ: pz, locked: false, face: Math.atan2(-(px - x), -(pz - z)), shieldHp: 0, shieldMax: 0, shieldFlash: 0,
   });
@@ -2189,7 +2438,7 @@ function fireBullet(x, y, z, dx, dy, dz, speed, dmg, size = 1) {
   const b = bullets.find(b => !b.active);
   if (!b) return;
   const l = hyp(dx, dy, dz) || 1;
-  Object.assign(b, { active: true, x, y, z, lx: x, ly: y, lz: z, vx: dx / l * speed, vy: dy / l * speed, vz: dz / l * speed, life: 6, dmg, r: 0.28 * size });
+  Object.assign(b, { active: true, x, y, z, lx: x, ly: y, lz: z, vx: dx / l * speed, vy: dy / l * speed, vz: dz / l * speed, life: 6, dmg, r: 0.28 * size, whiz: 99 });
   b.mesh.scale.setScalar(size);
   b.mesh.position.set(x, y, z);
   b.mesh.visible = true;
@@ -2223,7 +2472,7 @@ function updateEnemies(dt) {
     if (e.type === 'boss') { _tmp.x = clamp(_tmp.x, -14, 14); _tmp.z = clamp(_tmp.z, -14, 14); }
     else if (e.mode === 'rush') { const m = HALF - e.def.r; _tmp.x = clamp(_tmp.x, -m, m); _tmp.z = clamp(_tmp.z, -m, m); }   // a rush goes over cover to a clear spot
     else if (pushOut(_tmp, e.def.r, e.type === 'drone' ? 2 : 0) && e.type === 'charger' && e.mode === 'dash') {
-      e.mode = 'recover'; e.modeT = 0; e.stun = 0.4; noise(0.25, 0.15, 800); shake = Math.max(shake, cfg.shake * (0.04));
+      e.mode = 'recover'; e.modeT = 0; e.stun = 0.4; SFX.crash(); shake = Math.max(shake, cfg.shake * (0.04));
     }
     e.x = _tmp.x; e.z = _tmp.z;
     // Never inside the player: the camera would be inside it too.
@@ -2234,10 +2483,10 @@ function updateEnemies(dt) {
 
     // Touching the player hurts, once a second; it bounces off.
     const touch = e.def.r + PLAYER_R;
-    const reach = e.type === 'crawler' ? 0.7 : e.type === 'drone' ? 2.4 : e.def.y1 - 0.4;     // jumped clear above this
-    if (e.type !== 'charger' && e.type !== 'turret' && dist < touch && e.cool <= 0 && py < reach) {
+    const reach = e.type === 'drone' ? 2.4 : e.def.y1 - 0.4;     // jumped clear above this
+    if (e.type !== 'charger' && e.type !== 'turret' && e.type !== 'crawler' && dist < touch && e.cool <= 0 && py < reach) {
       e.cool = 1;
-      damagePlayer(e.type === 'drone' ? 10 : e.type === 'boss' ? 15 : e.type === 'crawler' ? 14 : 18, e.x, e.z);
+      damagePlayer(e.type === 'drone' ? 10 : e.type === 'boss' ? 15 : 18, e.x, e.z);
       e.vx = -nx * 10; e.vz = -nz * 10;
       e.stun = Math.max(e.stun, e.type === 'drone' ? 0.6 : 0.3);
       if (e.type === 'boss') { pvx += nx * 16; pvz += nz * 16; }
@@ -2286,11 +2535,10 @@ function aiSniper(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
     if (e.modeT < AIM - LOCK) {
       e.aimX = damp(e.aimX, px, 7, dt); e.aimZ = damp(e.aimZ, pz, 7, dt); e.aimY = damp(e.aimY, py + 1.3, 7, dt);
       if (!sees) { e.mode = 'approach'; e.fireT = 0.6; }
-    } else if (!e.locked) { e.locked = true; sound(1500, 0.1, 'square', 1500, 0.035); }
+    } else if (!e.locked) { e.locked = true; SFX.sniperLock(); }
     if (e.mode === 'aim' && e.modeT >= AIM) {
       fireBullet(e.x, 3.0, e.z, e.aimX - e.x, e.aimY - 3.0, e.aimZ - e.z, 40 * shotSpeed, 24, 0.9);
-      noise(0.12, 0.14, 5000);
-      sound(1800, 0.18, 'sawtooth', 300, 0.05);
+      SFX.sniperFire();
       e.mode = 'approach'; e.locked = false; e.fireT = 2.6 + random() * 1.2;
     }
   } else {
@@ -2302,7 +2550,7 @@ function aiSniper(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
     if (e.fireT <= 0) {
       if (sees) {
         e.mode = 'aim'; e.modeT = 0; e.aimX = px; e.aimZ = pz; e.aimY = py + 1.3;
-        sound(700, AIM - LOCK, 'sine', 1400, 0.025);
+        SFX.sniperAim(AIM - LOCK);
       } else e.fireT = 0.3;
     }
   }
@@ -2321,7 +2569,7 @@ function aiBulwark(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
   if (e.fireT <= 0) {
     if (Math.abs(turn) < 0.7 && lineOfSight(e.x, 2.45, e.z, px, py + 1.3, pz)) {
       fireBullet(e.x - Math.sin(e.face) * 0.6, 2.45, e.z - Math.cos(e.face) * 0.6, dx, py + 1.3 - 2.45, dz, 16 * shotSpeed, 9);
-      sound(620, 0.1, 'square', 300, 0.035);
+      SFX.enemyShot(0.75);
       if (++e.volleys >= 3) { e.volleys = 0; e.fireT = 2.6 + random(); } else e.fireT = 0.17;
     } else e.fireT = 0.25;
   }
@@ -2339,8 +2587,7 @@ function aiThumper(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
     if (left <= speed * dt) {
       e.vx = e.vz = 0; e.x = e.tx; e.z = e.tz;
       e.mode = 'charge'; e.modeT = 0;
-      noise(0.3, 0.2, 700);
-      sound(d.boss ? 90 : 140, T, 'sawtooth', d.boss ? 360 : 520, 0.06);
+      SFX.thumpCharge(d.boss, T);
     } else {
       e.vx = tx / left * speed; e.vz = tz / left * speed;
       if (Math.random() < 0.7) burst(e.x, 0.8 * (d.scale ?? 1), e.z, d.color, d.boss ? 4 : 2, 2, 0.4, 0);
@@ -2353,12 +2600,11 @@ function aiThumper(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
     if (e.modeT >= T) {
       for (let i = 0; i < (enraged ? 2 : 1); i++) shockwave(e.x, e.z, d.ringSpeed * shotSpeed, d.blastDmg, i * 0.45, d.color, d.blastR, d.r);
       burst(e.x, 0.4, e.z, d.color, d.boss ? 80 : 36, d.boss ? 11 : 7, 0.7);
-      noise(d.boss ? 0.8 : 0.45, d.boss ? 0.32 : 0.24, d.boss ? 380 : 520);
-      sound(d.boss ? 50 : 75, d.boss ? 0.8 : 0.45, 'sawtooth', 30, d.boss ? 0.12 : 0.09);
+      SFX.quakeBlast(d.boss);
       shake = Math.max(shake, cfg.shake * (d.boss ? 0.3 : 0.12 * Math.max(0.3, 1 - dist / 20)));
       if (d.boss) flashT = Math.max(flashT, 0.3);
       e.charge = 0; e.mode = 'cool'; e.modeT = 0;
-      if (d.boss) popup('EXPOSED', e.x, 3, e.z, PALETTE.yellow);
+      if (d.boss) { popup('EXPOSED', e.x, 3, e.z, PALETTE.yellow); SFX.exposed(); }
       e.coolFor = d.coolT * (d.boss ? 1 : 0.8 + random() * 0.4);
     }
   } else {                                      // spent: it stands still for the cooldown
@@ -2370,6 +2616,7 @@ function aiTurret(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
   // Warms up, then sweeps its beam round and round; cover blocks it, and so does being in the air.
   e.vx = e.vz = 0;
   e.modeT += dt;
+  if (e.modeT > 1.4 && e.modeT - dt <= 1.4) SFX.turretLive();
   const live = e.modeT > 1.4, sweep = (0.85 + 0.02 * n) * e.beamDir;
   e.beamA += sweep * dt * (live ? 1 : 0.15);
   const sx = Math.sin(e.beamA), sz = Math.cos(e.beamA);
@@ -2395,9 +2642,27 @@ function aiCrawler(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
   turn = Math.atan2(Math.sin(turn), Math.cos(turn));
   e.face += clamp(turn, -4.5 * dt, 4.5 * dt);
   e.lunge = close ? Math.min(1, e.lunge + dt * 2) : Math.max(0, e.lunge - dt * 2);
+  // Close enough, it rears back for a beat, then bites: still in reach and not jumped clear, it hurts.
+  if (e.bite > 0) {
+    e.vx = damp(e.vx, nx * 2, 10, dt); e.vz = damp(e.vz, nz * 2, 10, dt);
+    if ((e.bite -= dt) <= 0) {
+      e.bite = 0; e.cool = 1.1;
+      SFX.biteSnap();
+      if (dist < BITE_R && py < 0.7) {
+        damagePlayer(14, e.x, e.z);
+        e.vx = -nx * 8; e.vz = -nz * 8; e.stun = 0.35;
+      }
+    }
+    return;
+  }
+  if (dist < BITE_R - 0.3 && e.cool <= 0 && py < 1.2) {
+    e.bite = BITE_WIND;
+    SFX.biteHiss();
+  }
   const sp = e.speed * (1 + e.lunge * 0.45);
   e.vx = Math.sin(e.face) * sp; e.vz = Math.cos(e.face) * sp;
 }
+const BITE_R = 2.1, BITE_WIND = 0.3;
 function aiDrone(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
   let ax = 0, az = 0;           // where it wants to go, as a velocity
   const wob = Math.sin(e.t * 2.2 + e.phase) * 2.4;
@@ -2420,7 +2685,7 @@ function aiGunner(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
         const c = Math.cos(s), si = Math.sin(s), bx = dx * c - dz * si, bz = dx * si + dz * c;
         fireBullet(e.x, 2.0, e.z, bx, py + 1.2 - 2.0, bz, 15 * shotSpeed, 10);
       }
-      sound(700, 0.12, 'sine', 300, 0.05);
+      SFX.enemyShot(1);
       e.fireT = 2.2 + random() * 0.8;
     } else e.fireT = 0.25;
   }
@@ -2434,11 +2699,11 @@ function aiCharger(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
     e.dirX = nx; e.dirZ = nz;
     if (e.modeT > 1.5 && dist < 13 && lineOfSight(e.x, 1, e.z, px, py + 1, pz)) {
       e.mode = 'windup'; e.modeT = 0; e.dirX = nx; e.dirZ = nz;
-      sound(180, 0.7, 'sawtooth', 700, 0.035);
+      SFX.chargerWind();
     }
   } else if (e.mode === 'windup') {
     e.vx = damp(e.vx, 0, 10, dt); e.vz = damp(e.vz, 0, 10, dt);
-    if (e.modeT > 0.75) { e.mode = 'dash'; e.modeT = 0; e.hitPlayer = false; noise(0.3, 0.12, 2500); }
+    if (e.modeT > 0.75) { e.mode = 'dash'; e.modeT = 0; e.hitPlayer = false; SFX.chargerDash(); }
   } else if (e.mode === 'dash') {
     e.vx = e.dirX * 24; e.vz = e.dirZ * 24;
     if (!e.hitPlayer && dist < e.def.r + PLAYER_R + 0.3 && py < 1.3) {     // it can be jumped
@@ -2464,7 +2729,7 @@ function aiBrute(e, dt, n, rate, shotSpeed, dx, dz, dist, nx, nz) {
       const a = off + i / count * Math.PI * 2;
       fireBullet(e.x, 1.2, e.z, Math.cos(a), 0, Math.sin(a), 8 * shotSpeed, 12, 1.2);
     }
-    noise(0.3, 0.15, 900);
+    SFX.bruteRing();
     e.fireT = 5;
   }
 }
@@ -2492,8 +2757,7 @@ function startRush(e) {
   }
   e.tx = spot.x; e.tz = spot.z;
   e.mode = 'rush'; e.modeT = 0;
-  noise(0.22, 0.12, 4200);
-  sound(d.boss ? 200 : 300, 0.25, 'sawtooth', d.boss ? 900 : 1200, 0.05);
+  SFX.rush(d.boss);
 }
 function clearSpotNear(x0, z0) {
   for (let i = 0; i < 30; i++) {
@@ -2515,7 +2779,7 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
     if (e.atkCool <= 0) {
       e.attack = BOSS_CYCLE[e.cycle++ % BOSS_CYCLE.length];
       e.atkT = 0; e.tele = 0.7; e.volleys = 0; e.fireT = 0;
-      sound(150, 0.6, 'sawtooth', 450, 0.05);
+      SFX.bossTele();
     }
     return;
   }
@@ -2532,7 +2796,7 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
         const a = e.spiralA + i / arms * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
         fireBullet(e.x + c * 2.6, 1.3, e.z + s * 2.6, c, 0, s, 8.5 * shotSpeed, 12, 1.3);
       }
-      if (Math.floor(e.atkT / 0.085) % 3 === 0) sound(420, 0.06, 'sine', 300, 0.025);
+      if (Math.floor(e.atkT / 0.085) % 3 === 0) SFX.spiral();
     }
     if (e.atkT > 2.8) endAttack(e, enraged);
   } else if (e.attack === 'fan') {
@@ -2543,7 +2807,7 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
         const s = (i - (count - 1) / 2) * 0.12, c = Math.cos(s), si = Math.sin(s);
         fireBullet(ex, e.y, ez, dx * c - dz * si, (py + 1.3 - e.y), dx * si + dz * c, 13 * shotSpeed, 12, 1.4);
       }
-      sound(500, 0.15, 'square', 200, 0.05);
+      SFX.fan();
       if (e.volleys >= 3) endAttack(e, enraged);
     }
   } else if (e.attack === 'slam') {
@@ -2556,8 +2820,7 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
       const rings = enraged ? 4 : 3;
       for (let i = 0; i < rings; i++) shockwave(e.x, e.z, 10 * shotSpeed, 18, i * 0.42, PALETTE.red);
       burst(e.x, 0.5, e.z, PALETTE.red, 90, 12, 0.9);
-      noise(0.9, 0.35, 380);
-      sound(55, 0.9, 'sawtooth', 28, 0.12);
+      SFX.quakeBlast(true);
       shake = Math.max(shake, cfg.shake * 0.3);
       flashT = Math.max(flashT, 0.35);
     } else {
@@ -2570,7 +2833,7 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
     for (const o of enemies) if (o.type === 'turret') alive++;
     const want = Math.min((enraged ? 3 : 2), 4 - alive);
     for (let i = 0; i < want; i++) beginSpawn('turret', null, { at: cacheSpot(7, 20) });
-    if (want > 0) { popup('TURRETS INBOUND', 0, 0, 0, PALETTE.red, true); sound(330, 0.5, 'square', 165, 0.05); }
+    if (want > 0) { popup('TURRETS INBOUND', 0, 0, 0, PALETTE.red, true); SFX.turretsInbound(); }
     else beginSpawn('drone', { x: e.x, z: e.z });
     endAttack(e, enraged);
   } else if (e.attack === 'summon') {
@@ -2597,7 +2860,7 @@ function updateQuakes(dt) {
     if (!q.active) continue;
     if (q.delay > 0) {
       q.delay -= dt;
-      if (q.delay <= 0) { q.band.visible = true; noise(0.3, 0.16, 500); }
+      if (q.delay <= 0) { q.band.visible = true; if (due('quake', 0.1)) SFX.quakeRoll(); }
       continue;
     }
     q.r += q.speed * dt;
@@ -2638,7 +2901,13 @@ function updateBullets(dt) {
       burst(b.x, Math.max(0.1, b.y), b.z, PALETTE.red, 5, 3, 0.3);
       continue;
     }
-    if (hyp(b.x - px, b.z - pz) < PLAYER_R + b.r && b.y < py + 1.9 + b.r && b.y > py + 0.3 - b.r) {
+    const bd = hyp(b.x - px, b.z - pz);
+    // A near miss whizzes past: heard once, as it starts to pull away.
+    if (b.whiz >= 0) {
+      if (bd > b.whiz && b.whiz < 2.2 && b.y > py && b.y < py + 2.8) { b.whiz = -1; if (due('whiz', 0.12)) SFX.whiz(); }
+      else b.whiz = bd;
+    }
+    if (bd < PLAYER_R + b.r && b.y < py + 1.9 + b.r && b.y > py + 0.3 - b.r) {
       if (dashT > 0) continue;            // a dash passes straight through
       b.active = false;
       b.mesh.visible = false;
@@ -2667,7 +2936,7 @@ function updatePickups(dt) {
       p.mesh.visible = false;
       hp = Math.min(stats.maxHp, hp + 15);
       popup('+15', p.x, 1.4, p.z, PALETTE.green);
-      sound(660, 0.15, 'triangle', 1320, 0.07);
+      SFX.heal();
       burst(p.x, 1, p.z, PALETTE.green, 14, 4, 0.5);
     } else if (p.t > 16) { p.active = false; p.mesh.visible = false; }
   }
@@ -2702,7 +2971,7 @@ function updateAmmo(dt) {
       dropAmmo(spot.x, spot.z);
       popup('AMMO DROP', spot.x, 1.8, spot.z, PALETTE.accent);
       burst(spot.x, 1, spot.z, PALETTE.accent, 24, 5, 0.6);
-      sound(700, 0.15, 'triangle', 1050, 0.05);
+      SFX.ammoDrop();
     }
   } else if (!every) bossAmmoT = 0;
   for (let i = 0; i < ammoDrops.length; i++) {
@@ -2716,8 +2985,7 @@ function updateAmmo(dt) {
       const n = Math.round(stats.mag * 1.5);
       giveReserve(n);
       popup(`+${n} AMMO`, d.x, 1.4, d.z, PALETTE.accent);
-      noise(0.08, 0.12, 3000);
-      sound(500, 0.1, 'triangle', 800, 0.06);
+      SFX.ammoPickup();
     } else if (d.t > 18) { d.active = false; d.group.visible = false; }
   }
   if (cache.active) {
@@ -2740,7 +3008,7 @@ function dropWeapon(x, z) {
   d.glowMat.color.copy(DARK ? hot(c, 1.4) : col(c));
   d.group.visible = true;
   popup(WEAPONS[kind].name, x, 2.2, z, c);
-  sound(660, 0.2, 'triangle', 990, 0.04);
+  SFX.weaponDrop();
 }
 function equip(kind) {
   const w = WEAPONS[kind];
@@ -2750,7 +3018,7 @@ function equip(kind) {
   popup(`${w.name} · UNTIL SECTOR END`, 0, 0, 0, w.color, true);
   flashT = Math.max(flashT, 0.25);
   burst(px, py + 1.2, pz, w.color, 30, 6, 0.6);
-  [440, 660, 880].forEach((f, i) => setTimeout(() => sound(f, 0.14, 'square', f * 1.5, 0.05), i * 70));
+  SFX.equip();
 }
 
 // A driving pulse under the fight that grows as the run goes deeper: every sector is a little
@@ -2893,8 +3161,12 @@ function drawEnemies(live, alpha) {
         cage.rotation.y += live * (k % 2 ? 2 : -2);
         m.visible = cage.visible = true;
       }
-      p.head.position.y = p.headEdges.position.y = 0.42 + Math.sin(e.t * 9) * 0.05;
-      e.eyeMat.emissiveIntensity = 1 + e.flash * 2 + e.lunge * 3;
+      // Rearing to bite, the head lifts and draws back, then strikes forward.
+      const rear = e.bite > 0 ? 1 - e.bite / BITE_WIND : 0, strike = e.bite <= 0 && e.cool > 0.85 ? (e.cool - 0.85) / 0.25 : 0;
+      p.head.position.y = p.headEdges.position.y = 0.42 + Math.sin(e.t * 9) * 0.05 + rear * 0.35;
+      p.head.position.z = p.headEdges.position.z = -rear * 0.3 + strike * 0.6;
+      for (const m of p.eyes) { m.position.y = 0.62 + rear * 0.35; m.position.z = 0.1 - rear * 0.3 + strike * 0.6; }
+      e.eyeMat.emissiveIntensity = 1 + e.flash * 2 + e.lunge * 3 + rear * 4;
     } else if (e.type === 'sniper') {
       g.rotation.y = face;
       p.body.rotation.y += live * 1.2;
@@ -3194,6 +3466,9 @@ function draw(dt, alpha = 1) {
 
   // The jump warning: bars close in on JUMP as a ring or a beam nears; red is the moment to jump.
   const warnOn = state === 'playing' && phase !== 'upgrade' && hazardT < 0.9;
+  const warnLvl = !warnOn ? 0 : hazardT < 0.22 ? 2 : 1;
+  if (warnLvl > _warnLvl) (warnLvl === 2 ? SFX.jumpNow : SFX.jumpWarn)();
+  _warnLvl = warnLvl;
   sty(ui.jumpwarn, 'display', warnOn ? 'block' : 'none');
   sty(ui.groundglow, 'opacity', op(warnOn ? 0.25 + (1 - hazardT / 0.9) * 0.55 : 0));
   if (warnOn) {
@@ -3353,7 +3628,7 @@ function changeSetting(i, dir) {
   else cfg[d.id] = clamp(Math.round((cfg[d.id] + dir * d.step) / d.step) * d.step, d.min, d.max);
   saveSettings();
   renderSettings();
-  sound(600 + dir * 80, 0.05, 'triangle', 600, 0.05);
+  SFX.tick(dir > 0 ? 1 : 0);
 }
 function renderSettings() {
   const box = $('settings');
@@ -3372,7 +3647,7 @@ function renderSettings() {
 function helpInput() {
   if (wasPressed('help') || wasPressed('pause')) return true;
   const step = (wasPressed('down') ? 1 : 0) - (wasPressed('up') ? 1 : 0);
-  if (step) { setSel = (setSel + step + SETTINGS.length) % SETTINGS.length; renderSettings(); sound(500, 0.03, 'triangle', 500, 0.03); }
+  if (step) { setSel = (setSel + step + SETTINGS.length) % SETTINGS.length; renderSettings(); SFX.tick(); }
   const dir = (wasPressed('right') || wasPressed('turnRight') ? 1 : 0) - (wasPressed('left') || wasPressed('turnLeft') ? 1 : 0);
   if (dir) changeSetting(setSel, dir);
   else if (wasPressed('action')) changeSetting(setSel, 1);
@@ -3405,7 +3680,7 @@ function startRound() {
   _stepPressed.clear();               // the key that started the round is not its first move
   _stepClicks.clear();
   show('playing');
-  sound(440, 0.12, 'square', 880);
+  SFX.confirm();
 }
 
 function endRound(won, { title, detail } = {}) {

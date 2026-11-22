@@ -37,7 +37,7 @@ Breach then appears in Game Vibes in the app launcher (Super + Space).
 ## What's in it
 
 - **Sectors and bosses.** Waves of enemies teleport in, with a warning before each one arrives. Clear a sector to pick one of three upgrades. Every fifth sector holds a boss: a Warden at sectors 5, 15, 25…, the Thumper at 10, 20, 30….
-- **Enemies.** Drones, gunners, chargers, brutes that split when killed, crawlers that slither along the ground, lancers that aim a laser before firing, bulwarks that hide behind shields, and, once the first Warden falls, mini-thumpers that rush to your side and blast a short-range shockwave along the floor.
+- **Enemies.** Drones, gunners, chargers, brutes that split when killed, crawlers that slither along the ground and rear up to bite, lancers that aim a laser before firing, bulwarks that hide behind shields, and, once the first Warden falls, mini-thumpers that rush to your side and blast a short-range shockwave along the floor.
 - **Wardens.** Bosses that fire fans and spirals of shots, summon minions, slam down to send shockwave rings across the arena, and drop turrets that sweep beams along the floor.
 - **The Thumper.** A boss that rushes to your side in an instant, charges, and blasts a shockwave across the whole arena, then stands spent for two seconds, taking double damage, before it comes again, leaving lesser enemies behind wherever it set off from.
 - **Jumping.** Rings and beams that travel along the floor can only be jumped, or dashed through. A JUMP warning closes in under the crosshair as one approaches, and turns red at the moment to jump.
