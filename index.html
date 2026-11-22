@@ -150,6 +150,16 @@
   #groundglow { left: 0; right: 0; bottom: 0; height: 30vh; opacity: 0; background: linear-gradient(to top, color-mix(in srgb, var(--red) 60%, transparent), transparent); }
   #cachemark { left: 0; top: 0; display: none; text-align: center; font-size: 13px; letter-spacing: 2px; font-weight: bold; color: var(--accent); text-shadow: 0 0 6px var(--background); will-change: transform; white-space: nowrap; }
   #cachemark b { display: block; width: 14px; height: 14px; margin: 0 auto 6px; border: 2px solid var(--accent); transform: rotate(45deg); box-shadow: 0 0 10px var(--accent); }
+  /* The HUD drifts with the player's movement; hit, it glitches into split colour for a moment. */
+  #hud-left, #hud-right, #bottom { will-change: transform; }
+  body.glitch #hud-left, body.glitch #hud-right, body.glitch #bottom { text-shadow: 2px 0 color-mix(in srgb, var(--red) 85%, transparent), -2px 0 color-mix(in srgb, var(--cyan) 85%, transparent), 0 0 8px var(--background); }
+  body.glitch #bottom .bar { box-shadow: 2px 0 0 color-mix(in srgb, var(--red) 70%, transparent), -2px 0 0 color-mix(in srgb, var(--cyan) 70%, transparent); }
+  /* Speed streaks while dashing: thin rays out from the middle, clear at the centre. */
+  #speed { inset: -40%; opacity: 0; will-change: transform, opacity;
+    background: repeating-conic-gradient(from 0deg at 50% 50%, transparent 0deg 3.1deg, color-mix(in srgb, var(--foreground) 30%, transparent) 3.1deg 3.5deg, transparent 3.5deg 7.3deg);
+    -webkit-mask-image: radial-gradient(circle at center, transparent 22%, #000 48%); mask-image: radial-gradient(circle at center, transparent 22%, #000 48%); }
+  /* A diamond that springs out of the crosshair on a kill. */
+  #killring { left: 50%; top: 50%; width: 30px; height: 30px; margin: -16px 0 0 -16px; border: 2px solid var(--accent); border-radius: 3px; opacity: 0; box-shadow: 0 0 10px var(--accent); will-change: transform, opacity; }
 </style>
 <!-- One pinned three.js version. Addons, if any, come from the same version. -->
 <script type="importmap">
@@ -164,6 +174,8 @@
 <div id="vignette" class="layer"></div>
 <div id="popups" class="layer"></div>
 <div id="crosshair" class="layer"><i class="h l"></i><i class="h r"></i><i class="v t"></i><i class="v b"></i><i class="dot"></i><b class="wx ring"></b><b class="wx brk bl"></b><b class="wx brk br"></b><b class="wx charge"><span></span></b><b class="wx tri"><span></span><span></span><span></span></b></div>
+<div id="speed" class="layer"></div>
+<div id="killring" class="layer"></div>
 <div id="hitmark" class="layer"><i></i><i></i><i></i><i></i></div>
 <div id="dmgdir" class="layer"><i></i></div>
 <div id="reload" class="layer"><div id="reload-text"></div><div class="rbar" id="reload-bar"><i id="reload-zone"></i><b id="reload-fill"></b><s id="reload-cursor"></s></div></div>
@@ -176,7 +188,7 @@
 <div id="mousehint" class="layer dim">Click to aim with the mouse · or turn with <span class="key">← →</span></div>
 
 <div id="hud">
-  <div><div class="big" id="score">0</div><div id="combo"></div></div>
+  <div id="hud-left"><div class="big" id="score">0</div><div id="combo"></div></div>
   <div><div id="sector-line">SECTOR 1</div><div id="enemies-line" class="dim"></div></div>
   <div id="hud-right" class="dim">BEST <span id="best">—</span><div id="best-sector"></div></div>
 </div>
@@ -532,6 +544,29 @@ function hiss(o) {
 function chime(notes, gap, vol, wet = 0.4) {
   for (let i = 0; i < notes.length; i++) zap({ f: notes[i], to: notes[i] * 0.995, dur: 0.32, type: 'sine', fm: 3.5, fmd: 0.9, vol, wet, at: i * gap, atk: 0.002 });
 }
+// A laser wall's hum: one held voice whose loudness and brightness follow how near the wall is.
+let _hum = null;
+function wallHum(level) {
+  if (!_audio || _audio.state !== 'running') return;
+  if (_muted || state !== 'playing') level = 0;
+  if (!_hum) {
+    if (level <= 0) return;
+    const a = _audio, g = a.createGain(), flt = a.createBiquadFilter(), o1 = a.createOscillator(), o2 = a.createOscillator(), l = a.createOscillator(), lg = a.createGain();
+    g.gain.value = 0; flt.type = 'lowpass'; flt.Q.value = 6; flt.frequency.value = 400;
+    o1.type = o2.type = 'sawtooth'; o1.frequency.value = 55; o2.frequency.value = 55.6;
+    l.frequency.value = 9; lg.gain.value = 0.35;
+    o1.connect(flt); o2.connect(flt); flt.connect(g).connect(_out());
+    l.connect(lg).connect(g.gain);
+    for (const o of [o1, o2, l]) o.start();
+    _hum = { g, flt, lg, level: 0 };
+  }
+  if (Math.abs(level - _hum.level) < 0.01) return;
+  _hum.level = level;
+  const t = _audio.currentTime;
+  _hum.g.gain.setTargetAtTime(level * 0.07, t, 0.06);
+  _hum.lg.gain.setTargetAtTime(level * 0.03, t, 0.06);
+  _hum.flt.frequency.setTargetAtTime(300 + level * 2600, t, 0.06);
+}
 // Effects that can fire many times a frame (pellets, storm hits) play at most once per interval.
 const _sfxAt = {};
 function due(key, seconds) {
@@ -709,6 +744,11 @@ const SFX = {
   spiral: () => zap({ f: 700, to: 400, dur: 0.06, type: 'sine', fm: 2, fmd: 0.5, vol: 0.02 }),
   fan: () => zap({ f: 900, to: 180, dur: 0.16, type: 'square', det: 12, fm: 1.5, fmd: 0.5, q: 4, ff: 5000, fto: 500, vol: 0.045 }),
   turretsInbound: () => { for (let i = 0; i < 4; i++) zap({ f: i % 2 ? 740 : 990, to: i % 2 ? 740 : 990, dur: 0.14, type: 'square', q: 3, ff: 3500, fto: 1500, vol: 0.035, at: i * 0.16 }); },
+  wallWarm: () => {
+    zap({ f: 70, to: 420, dur: 0.9, type: 'sawtooth', det: 14, q: 9, ff: 200, fto: 5000, lfo: 11, lfod: 0.04, vol: 0.06, wet: 0.35 });
+    hiss({ ff: 600, fto: 6000, q: 6, dur: 0.9, vol: 0.06, atk: 0.6 });
+  },
+  wallZap: () => { hiss({ ff: 7000, fto: 1500, q: 4, dur: 0.25, vol: 0.18 }); zap({ f: 2400, to: 120, dur: 0.3, type: 'sawtooth', lfo: 60, lfod: 0.2, vol: 0.06 }); },
   turretLive: () => zap({ f: 200, to: 1600, dur: 0.3, type: 'sawtooth', q: 10, ff: 500, fto: 6000, vol: 0.03, wet: 0.3 }),
 };
 
@@ -805,7 +845,7 @@ const shellReload = () => !!(weapon && WEAPONS[weapon].shells);
 
 // Ammo is finite: the rifle carries a reserve, and a weapon mod its own. When everything is gone a
 // last-chance reload appears; miss it, and the only ammo is a cache somewhere in the open arena.
-const START_MAGS = 4, MAX_MAGS = 6, EMERG_SWEEP = 0.9, EMERG_W = 0.14;
+const MAX_MAGS = 6, EMERG_SWEEP = 0.9, EMERG_W = 0.14;
 const reserveNow = () => weapon ? modReserve : reserve;
 function takeReserve(n) {
   const t = Math.max(0, Math.min(n, reserveNow()));
@@ -838,7 +878,20 @@ const cfg = { sens: saved.get('sens', 0.0022) / 0.0022, invert: false, fov: 75, 
     cfg[d.id] = d.options ? clamp(Math.round(v), 0, d.options.length - 1) : d.bool ? v : clamp(v, d.min, d.max);
   }
 }
-const HARM = [0.6, 1, 1.4];      // damage taken, by difficulty
+// What each difficulty changes. It is locked in when a run starts, so it can't be switched mid-run.
+//   harm      damage taken            hp, boss   enemy and boss integrity
+//   rate      how often enemies fire   shot       how fast their shots, rings and walls travel
+//   speed     how fast enemies move    count      how many come in a wave
+//   heal      repair drops (and the repair after a sector)   ammo   ammo drop chances and crates
+//   mags      spare magazines at the start   zone, emerg   width of the perfect and last-chance reload windows
+//   iframes   seconds untouchable after a hit   score   points earned
+const DIFFS = [
+  { name: 'EASY',   harm: 0.5, hp: 0.75, boss: 0.7, rate: 0.75, shot: 0.85, speed: 0.9,  count: 0.7,  heal: 1.7, ammo: 1.5,  mags: 6, zone: 1.45, emerg: 1.6, iframes: 0.6,  score: 0.6 },
+  { name: 'NORMAL', harm: 1,   hp: 1,    boss: 1,   rate: 1,    shot: 1,    speed: 1,    count: 1,    heal: 1,   ammo: 1,    mags: 4, zone: 1,    emerg: 1,   iframes: 0.35, score: 1 },
+  { name: 'HARD',   harm: 1.6, hp: 1.35, boss: 1.4, rate: 1.3,  shot: 1.2,  speed: 1.12, count: 1.35, heal: 0.5, ammo: 0.65, mags: 3, zone: 0.65, emerg: 0.7, iframes: 0.25, score: 1.6 },
+];
+let DF = DIFFS[1], runDiff = 1, runOn = false;
+const emergW = () => EMERG_W * DF.emerg;
 
 // ---- world state ------------------------------------------------------------
 let stats, levels;
@@ -857,6 +910,7 @@ let adsHeld = false, adsK = 0, kickDebt = 0, sinceShot = 1, shellT = 0;
 let mouseFire = false, wantMouse = false, lockLost = false, lockLostAt = 0;
 let bestSector = saved.get('bestSector', 0);
 let enemies = [], boxes = [], walls = [];
+let hudX = 0, hudY = 0, hudLX = 0, hudLZ = 0, hudLY = 0, speedT = 0, killT = 0, killCrit = false;
 let bannerT = 0, hitT = 0, dmgT = 0, dmgAngle = 0, flashT = 0, muzzleT = 0, roll = 0, fov = 75;
 
 // ---- three.js objects, made once ---------------------------------------------
@@ -866,6 +920,8 @@ const AMMO_COLORS = {};
 let coverMeshes = [], coverEdges = [], halo, halo2, motes, stars;
 const pools = {}, markers = [], bullets = [], tracers = [], pickups = [], popups = [], weaponDrops = [], gunMods = {}, ammoDrops = [];
 const cache = { active: false, x: 0, z: 0, t: 0 };
+const lwalls = [];
+let lwTex = null;        // the Warden's laser walls
 const quakes = [];        // shockwave rings rolling across the floor
 let stormSpin;
 let particles, pPos, pCol, pBase, pVel, pLife, pMax, pNext = 0, pAliveT = 0;   // pAliveT: no spark outlives it
@@ -1029,6 +1085,39 @@ function build() {
     band.frustumCulled = false;
     scene.add(band);
     quakes.push({ active: false, band, mat, x: 0, z: 0, r: 0, speed: 0, maxR: 0, delay: 0, hit: false, dmg: 0 });
+  }
+  // Laser walls: a tall curtain of light with one gap, sweeping across the arena. Each half is a
+  // sheet with scanlines rolling up it, bright rails along its top and foot, and posts that frame the gap.
+  {
+    const cv = document.createElement('canvas');
+    cv.width = 4; cv.height = 64;
+    const cx = cv.getContext('2d'), grad = cx.createLinearGradient(0, 0, 0, 64);
+    grad.addColorStop(0, 'rgba(255,255,255,0.15)'); grad.addColorStop(0.5, 'rgba(255,255,255,1)'); grad.addColorStop(1, 'rgba(255,255,255,0.15)');
+    cx.fillStyle = 'rgba(255,255,255,0.35)'; cx.fillRect(0, 0, 4, 64);
+    for (let y = 0; y < 64; y += 16) { cx.fillStyle = grad; cx.fillRect(0, y, 4, 5); }
+    lwTex = new THREE.CanvasTexture(cv);
+    lwTex.wrapS = lwTex.wrapT = THREE.RepeatWrapping;
+    lwTex.repeat.set(1, 6);
+  }
+  G.lwSheet = new THREE.PlaneGeometry(1, 1).translate(0.5, 0.5, 0);
+  G.lwRail = new THREE.BoxGeometry(1, 0.14, 0.14).translate(0.5, 0, 0);
+  G.lwPost = new THREE.BoxGeometry(0.24, 1, 0.24).translate(0, 0.5, 0);
+  const blend = DARK ? THREE.AdditiveBlending : THREE.NormalBlending;
+  for (let i = 0; i < 2; i++) {
+    const sheetMat = new THREE.MeshBasicMaterial({ color: DARK ? hot(PALETTE.red, 1.3) : col(PALETTE.red), map: lwTex, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide, blending: blend });
+    const railMat = new THREE.MeshBasicMaterial({ color: DARK ? hot(PALETTE.red, 2.6) : mix(PALETTE.red, '#000000', 0.15), transparent: true, opacity: 1, depthWrite: false, blending: blend });
+    const postMat = new THREE.MeshBasicMaterial({ color: DARK ? hot(PALETTE.yellow, 2.6) : mix(PALETTE.yellow, '#000000', 0.25), transparent: true, opacity: 1, depthWrite: false, blending: blend });
+    const group = new THREE.Group(), sheets = [], tops = [], foots = [], posts = [];
+    for (let k = 0; k < 2; k++) {
+      sheets.push(group.add(new THREE.Mesh(G.lwSheet, sheetMat)).children.at(-1));
+      tops.push(group.add(new THREE.Mesh(G.lwRail, railMat)).children.at(-1));
+      foots.push(group.add(new THREE.Mesh(G.lwRail, railMat)).children.at(-1));
+      posts.push(group.add(new THREE.Mesh(G.lwPost, postMat)).children.at(-1));
+    }
+    for (const m of group.children) m.frustumCulled = false;
+    group.visible = false;
+    scene.add(group);
+    lwalls.push({ active: false, group, sheetMat, railMat, postMat, sheets, tops, foots, posts, axis: 0, dir: 1, pos: 0, lpos: 0, speed: 0, gap: 0, gap0: 0, gapW: 0, warm: 0, hit: false, prevS: NaN, t: 0, drift: 0 });
   }
   const edgeMats = {}, ringMats = {};
   for (const [type, def] of Object.entries(TYPES)) {
@@ -1241,7 +1330,7 @@ function build() {
   // The HUD's live parts.
   for (const id of ['hp-bar', 'hp-text', 'nova-bar', 'nova-text', 'dash-bar', 'combo', 'sector-line', 'enemies-line', 'banner', 'banner-title', 'banner-sub',
     'boss', 'boss-fill', 'boss-name', 'crosshair', 'hitmark', 'vignette', 'flash', 'dmgdir', 'mousehint', 'upgrade', 'cards', 'upgrade-title', 'upgrade-sub', 'title-best', 'best-sector',
-    'ammo', 'ammo-num', 'ammo-max', 'ammo-state', 'reload', 'reload-text', 'reload-bar', 'reload-fill', 'reload-zone', 'reload-cursor', 'weapon-name', 'fps', 'cachemark', 'jumpwarn', 'jw-l', 'jw-r', 'groundglow']) ui[id] = $(id);
+    'ammo', 'ammo-num', 'ammo-max', 'ammo-state', 'reload', 'reload-text', 'reload-bar', 'reload-fill', 'reload-zone', 'reload-cursor', 'weapon-name', 'fps', 'cachemark', 'jumpwarn', 'jw-l', 'jw-r', 'groundglow', 'hud-left', 'hud-right', 'bottom', 'speed', 'killring']) ui[id] = $(id);
   ui.cacheText = ui.cachemark.querySelector('span');
   ui.hpFill = ui['hp-bar'].firstElementChild;
   ui.novaFill = ui['nova-bar'].firstElementChild;
@@ -1358,12 +1447,12 @@ function renderRuns(table, runs, current) {
   if (!runs.length) return;
   table.createCaption().textContent = 'TOP RUNS';
   const head = table.insertRow();
-  for (const h of ['#', 'SCORE', 'SECTOR', 'KILLS', 'ACC', 'TIME', '']) { const th = document.createElement('th'); th.textContent = h; head.append(th); }
+  for (const h of ['#', 'SCORE', 'MODE', 'SECTOR', 'KILLS', 'ACC', 'TIME', '']) { const th = document.createElement('th'); th.textContent = h; head.append(th); }
   runs.slice(0, current ? 8 : 5).forEach((r, i) => {
     const row = table.insertRow();
     if (r === current) row.className = 'me';
     const date = new Date(Number(r.date) || 0);
-    for (const v of [i + 1, fmt(r.score), r.sector ?? '?', r.kills ?? 0, `${r.acc ?? 0}%`, clock(Number(r.time) || 0), r === current ? 'NOW' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })]) {
+    for (const v of [i + 1, fmt(r.score), DIFFS[r.mode ?? 1]?.name ?? '', r.sector ?? '?', r.kills ?? 0, `${r.acc ?? 0}%`, clock(Number(r.time) || 0), r === current ? 'NOW' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })]) {
       row.insertCell().textContent = v;
     }
   });
@@ -1415,7 +1504,7 @@ function makeEnemy(type, def, edgeMat, ringMat) {
     x: 0.5, z: 0.5, y: 0.5, vx: 0.5, vz: 0.5, hp: 0.5, maxHp: 0.5, t: 0.5, phase: 0.5, flash: 0.5, cool: 0.5, stun: 0.5, pop: 0.5, side: 1, sideT: 0.5,
     fireT: 0.5, charge: 0.5, mode: 'approach', modeT: 0.5, dirX: 0.5, dirZ: 0.5, hitPlayer: false, speed: 0.5,
     attack: null, atkT: 0.5, atkCool: 0.5, tele: 0.5, cycle: 0, spiralA: 0.5, volleys: 0, orb: 0.5,
-    aimY: 0.5, lx: 0.5, lz: 0.5, ly: 0.5, losT: 0.5, los: false, lunge: 0.5, bite: 0.5, tx: 0.5, tz: 0.5, coolFor: 0.5, slamY: 0.5, slammed: false,
+    aimY: 0.5, lx: 0.5, lz: 0.5, ly: 0.5, losT: 0.5, los: false, lunge: 0.5, bite: 0.5, tx: 0.5, tz: 0.5, coolFor: 0.5, 
     beamA: 0.5, beamDir: 1, beamLen: 0.5, prevD: NaN, aimX: 0.5, aimZ: 0.5, locked: false, face: 0.5, shieldHp: 0.5, shieldMax: 0.5, shieldFlash: 0.5 };
   const add = (obj, y = 0) => { obj.position.y = y; if (obj.isMesh) obj.castShadow = true; g.add(obj); return obj; };
   if (type === 'drone') {
@@ -1672,6 +1761,7 @@ function resized() {
 }
 
 function reset() {
+  runDiff = cfg.difficulty; DF = DIFFS[runDiff]; runOn = true;
   played = booted;
   booted = true;
   stats = baseStats();
@@ -1686,7 +1776,7 @@ function reset() {
   const start = Math.max(1, Math.floor(Number(launchParam('sector')) || 1));
   for (let n = 1; n < start; n++) levelUpRandomly();
   weapon = null; emerg = null; scavenging = false; modReserve = 0;
-  ammo = stats.mag; reserve = stats.mag * START_MAGS;
+  ammo = stats.mag; reserve = stats.mag * DF.mags;
   startSector(start);
 }
 
@@ -1732,7 +1822,7 @@ function startSector(n) {
 }
 
 function buildWave(n, w) {
-  let budget = (2.5 + n * 1.5 + w * 1.5) * (n % 5 === 0 ? 0.6 : 1);
+  let budget = (2.5 + n * 1.5 + w * 1.5) * (n % 5 === 0 ? 0.6 : 1) * DF.count;
   const options = [['drone', 1, 4]];
   if (n >= 2 || w >= 2) options.push(['gunner', 2, 3]);
   if (n >= 3) options.push(['charger', 2, 2.5]);
@@ -1778,9 +1868,9 @@ const roman = n => ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']
 function sectorCleared() {
   phase = 'cleared'; phaseT = 0;
   const base = 400 * sector, timeBonus = Math.max(0, Math.round((80 - sectorTime) * 8 * sector)), flawlessBonus = flawless ? 600 * sector : 0;
-  const gain = base + timeBonus + flawlessBonus;
+  const gain = Math.round((base + timeBonus + flawlessBonus) * DF.score);
   score += gain;
-  hp = Math.min(stats.maxHp, hp + 20);
+  hp = Math.min(stats.maxHp, hp + Math.round(20 * DF.heal));
   giveReserve(stats.mag);            // a magazine's worth for the next sector
   scavenging = false; emerg = null;
   banner(`SECTOR ${sector} CLEARED`, `+${fmt(gain)}${flawless ? ' · FLAWLESS' : ''}`, 2.6);
@@ -1873,6 +1963,8 @@ function update(dt) {
   updateBullets(dt);
   if (state !== 'playing') return;
   updateQuakes(dt);
+  if (state !== 'playing') return;
+  updateLaserWalls(dt);
   if (state !== 'playing') return;
   updatePickups(dt);
   updateAmmo(dt);
@@ -2035,7 +2127,7 @@ function spendWeapon() {
 // The last chance: the cursor sweeps back and forth over a narrow zone. R inside it restores a full
 // load; R outside it, or four sweeps without a try, and a cache must be found in the arena instead.
 function startEmergency() {
-  emerg = { t: 0, k: 0, zone: 0.15 + random() * (0.7 - EMERG_W) };
+  emerg = { t: 0, k: 0, zone: 0.15 + random() * (0.7 - emergW()) };
   reloading = false;
   popup('OUT OF AMMO', 0, 0, 0, PALETTE.red, true);
   SFX.outOfAmmo();
@@ -2045,14 +2137,14 @@ function emergencyStep(dt) {
   const u = (emerg.t / EMERG_SWEEP) % 2;
   emerg.k = u < 1 ? u : 2 - u;
   if (wasPressed('reload')) {
-    if (emerg.k >= emerg.zone && emerg.k <= emerg.zone + EMERG_W) restoreAmmo('LAST-CHANCE RELOAD');
+    if (emerg.k >= emerg.zone && emerg.k <= emerg.zone + emergW()) restoreAmmo('LAST-CHANCE RELOAD');
     else failEmergency();
   } else if (emerg.t > EMERG_SWEEP * 4) failEmergency();
 }
 function restoreAmmo(title) {
   emerg = null; scavenging = false;
   if (weapon) rifleMag = stats.mag; else ammo = stats.mag;
-  reserve = Math.max(reserve, stats.mag * START_MAGS);
+  reserve = Math.max(reserve, stats.mag * DF.mags);
   reloading = false;
   popup(title, 0, 0, 0, PALETTE.accent, true);
   flashT = Math.max(flashT, 0.3);
@@ -2094,7 +2186,7 @@ function startReload() {
 }
 function tryPerfectReload() {
   reloadTried = true;
-  const rt = reloadTime(), z0 = PERFECT_AT * rt, z1 = z0 + stats.perfect * rt;
+  const rt = reloadTime(), z0 = PERFECT_AT * rt, z1 = z0 + stats.perfect * DF.zone * rt;
   if (reloadT >= z0 && reloadT <= z1) { finishReload(true); return; }
   reloadDur += 0.6;
   jamT = 1;
@@ -2225,10 +2317,11 @@ const STREAKS = { 8: 'RAMPAGE', 16: 'UNSTOPPABLE', 24: 'OVERLOAD', 32: 'GODLIKE'
 
 function killEnemy(e) {
   removeEnemy(e);
+  if (!purging) { killT = 1; killCrit = e.def.boss || e.type === 'brute'; }
   combo++;
   comboT = 3;
   if (STREAKS[combo]) { popup(STREAKS[combo], 0, 0, 0, PALETTE.yellow, true); SFX.streak(); }
-  const gain = Math.round(e.def.points * comboMult() * (1 + (sector - 1) * 0.1));
+  const gain = Math.round(e.def.points * comboMult() * (1 + (sector - 1) * 0.1) * DF.score);
   score += gain;
   kills++;
   popup(`+${fmt(gain)}`, e.x, e.y + 1.2, e.z, PALETTE.accent);
@@ -2241,10 +2334,10 @@ function killEnemy(e) {
   burst(e.x, e.y + 1, e.z, PALETTE.foreground, big ? 16 : 6, big ? 14 : 10, 0.35);
   if (big || due('kill', 0.04)) SFX.kill(big);
   shake = Math.max(shake, cfg.shake * (big ? 0.2 : 0.06));
-  if (random() < e.def.drop) dropPickup(e.x, e.z);
+  if (random() < e.def.drop * DF.heal) dropPickup(e.x, e.z);
   // Ammo drops grow likely as the rifle's supply runs low; none while a cache is the way out.
   const supply = (weapon ? rifleMag : ammo) + reserve;
-  if (!e.def.boss && !scavenging && random() < (supply <= stats.mag ? 0.5 : supply <= stats.mag * 2 ? 0.28 : 0.04)) dropAmmo(e.x + 0.6, e.z);
+  if (!e.def.boss && !scavenging && random() < Math.min(0.9, (supply <= stats.mag ? 0.5 : supply <= stats.mag * 2 ? 0.28 : 0.04) * DF.ammo)) dropAmmo(e.x + 0.6, e.z);
   if (!e.def.boss && phase === 'fight' && random() < (e.type === 'brute' ? 0.22 : 0.045)) dropWeapon(e.x, e.z);
   if (e.type === 'crawler') for (const s of e.segs) burst(s.x, 0.4, s.z, e.def.color, 6, 5, 0.6);
   if (e.type === 'brute' && !purging) {
@@ -2257,7 +2350,6 @@ function killEnemy(e) {
 }
 
 function bossDown(e) {
-  e.slamY = 0; e.slammed = false;
   flashT = 1;
   shake = 0.35 * cfg.shake;
   for (let i = 0; i < 6; i++) setTimeout(() => { burst(e.x + (Math.random() - 0.5) * 5, 2 + Math.random() * 4, e.z + (Math.random() - 0.5) * 5, i % 2 ? PALETTE.yellow : PALETTE.red, 60, 12, 1.1); SFX.boom(); }, i * 140);
@@ -2269,7 +2361,7 @@ function bossDown(e) {
   for (const b of bullets) if (b.active) { b.active = false; b.mesh.visible = false; }
   clearQuakes();
   for (let i = 0; i < 4; i++) dropPickup(e.x + (random() - 0.5) * 6, e.z + (random() - 0.5) * 6);
-  banner(`${e.type === 'boss' ? 'WARDEN' : 'THUMPER'} DESTROYED`, `+${fmt(e.def.points * comboMult())}`, 2);
+  banner(`${e.type === 'boss' ? 'WARDEN' : 'THUMPER'} DESTROYED`, `+${fmt(e.def.points * comboMult() * DF.score)}`, 2);
 }
 
 function removeEnemy(e) {
@@ -2283,8 +2375,8 @@ function removeEnemy(e) {
 
 function damagePlayer(amount, fromX, fromZ) {
   if (invuln > 0 || dashT > 0 || state !== 'playing') return;
-  hp -= amount * (1 + (sector - 1) * 0.05) * HARM[cfg.difficulty];
-  invuln = 0.35;
+  hp -= amount * (1 + (sector - 1) * 0.05) * DF.harm;
+  invuln = DF.iframes;
   combo = 0;
   flawless = false;
   shake = Math.max(shake, cfg.shake * (0.14));
@@ -2301,7 +2393,8 @@ function die() {
   if (sector > bestSector) { bestSector = sector; saved.set('bestSector', sector); }
   const acc = shots ? Math.round(Math.min(hits, shots) / shots * 100) : 0;
   // Keep the run: the best eight by score, and a career tally.
-  const run = { score: Math.round(score), sector, kills, acc, time: Math.round(runTime), date: Date.now() };
+  const run = { score: Math.round(score), sector, kills, acc, time: Math.round(runTime), mode: runDiff, date: Date.now() };
+  runOn = false;
   const runs = loadRuns();
   runs.push(run);
   runs.sort((a, b) => b.score - a.score);
@@ -2311,7 +2404,7 @@ function die() {
   saved.set('career', { runs: (career.runs ?? 0) + 1, kills: (career.kills ?? 0) + kills, time: (career.time ?? 0) + runTime });
   ui.titleBest();
   renderRuns($('runs-over'), runs.slice(0, 8), run);
-  $('over-stats').textContent = `${kills} kills · ${acc}% accuracy · ${perfects} perfect reload${perfects === 1 ? '' : 's'} · ${clock(runTime)}` +
+  $('over-stats').textContent = `${DF.name} · ${kills} kills · ${acc}% accuracy · ${perfects} perfect reload${perfects === 1 ? '' : 's'} · ${clock(runTime)}` +
     (rank <= 8 && runs.length > 1 ? ` · #${rank} of your runs` : '');
   mouseFire = false;
   if (ui.locked()) document.exitPointerLock();
@@ -2412,13 +2505,13 @@ function activate(type, x, z, opts) {
   const power = (stats.damage / 12) * (0.12 / stats.fireInterval) * stats.bolts * (1 + stats.crit * 2) / 1.1;
   const hpScale = e.def.boss ? (1 + 0.3 * (Math.floor(n / 5) - 1)) * Math.max(1, power) : 1 + 0.12 * (n - 1);
   Object.assign(e, {
-    active: true, x, z, y: 0, vx: 0, vz: 0, hp: e.def.hp * hpScale, maxHp: e.def.hp * hpScale, t: 0, phase: random() * 6.28,
+    active: true, x, z, y: 0, vx: 0, vz: 0, hp: e.def.hp * hpScale * (e.def.boss ? DF.boss : DF.hp), maxHp: e.def.hp * hpScale * (e.def.boss ? DF.boss : DF.hp), t: 0, phase: random() * 6.28,
     flash: 0, cool: 0, stun: opts?.stun ?? 0, pop: 1, side: random() < 0.5 ? 1 : -1, sideT: 2 + random() * 2,
     fireT: 1.4 + random() * 1.4, charge: 0, mode: 'approach', modeT: 0, dirX: 0, dirZ: 0, hitPlayer: false,
-    speed: e.def.speed * Math.min(1.45, 1 + 0.035 * (n - 1)),
+    speed: e.def.speed * Math.min(1.45, 1 + 0.035 * (n - 1)) * DF.speed,
     attack: null, atkT: 0, atkCool: 2.5, tele: 0, cycle: 0, spiralA: 0, volleys: 0, orb: 0,
     aimY: py + 1.3, lx: x, lz: z, ly: 0, losT: 0, los: false, lunge: 0, bite: 0,
-    tx: x, tz: z, coolFor: 0, slamY: 0, slammed: false, beamA: random() * Math.PI * 2, beamDir: random() < 0.5 ? 1 : -1, beamLen: 0, prevD: NaN,
+    tx: x, tz: z, coolFor: 0, beamA: random() * Math.PI * 2, beamDir: random() < 0.5 ? 1 : -1, beamLen: 0, prevD: NaN,
     aimX: px, aimZ: pz, locked: false, face: Math.atan2(-(px - x), -(pz - z)), shieldHp: 0, shieldMax: 0, shieldFlash: 0,
   });
   if (type === 'sniper') e.fireT = 1.2 + random() * 1.5;
@@ -2445,7 +2538,7 @@ function fireBullet(x, y, z, dx, dy, dz, speed, dmg, size = 1) {
 }
 
 function updateEnemies(dt) {
-  const n = sector, rate = Math.min(1.8, 1 + 0.05 * (n - 1)), shotSpeed = Math.min(1.35, 1 + 0.02 * (n - 1));
+  const n = sector, rate = Math.min(1.8, 1 + 0.05 * (n - 1)) * DF.rate, shotSpeed = Math.min(1.35, 1 + 0.02 * (n - 1)) * DF.shot;
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (!e || !e.active) continue;
@@ -2478,7 +2571,7 @@ function updateEnemies(dt) {
     // Never inside the player: the camera would be inside it too.
     const ox = e.x - px, oz = e.z - pz, od = hyp(ox, oz), keep = e.def.r + PLAYER_R + 0.15;
     if (e.type !== 'boss' && e.type !== 'turret' && od < keep && od > 1e-4) { e.x = px + ox / od * keep; e.z = pz + oz / od * keep; }
-    e.y = e.type === 'drone' ? 1.6 + Math.sin(e.t * 3 + e.phase) * 0.25 : e.type === 'boss' ? 3.4 + Math.sin(e.t) * 0.3 + e.slamY : 0;
+    e.y = e.type === 'drone' ? 1.6 + Math.sin(e.t * 3 + e.phase) * 0.25 : e.type === 'boss' ? 3.4 + Math.sin(e.t) * 0.3 : 0;
     if (e.type === 'crawler') updateTrail(e);
 
     // Touching the player hurts, once a second; it bounces off.
@@ -2768,7 +2861,7 @@ function clearSpotNear(x0, z0) {
   return null;
 }
 
-const BOSS_CYCLE = ['fan', 'slam', 'spiral', 'turrets', 'fan', 'summon', 'slam', 'spiral'];
+const BOSS_CYCLE = ['fan', 'wall', 'spiral', 'turrets', 'fan', 'summon', 'wall', 'spiral'];
 function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
   const enraged = e.hp < e.maxHp * 0.5;
   e.orb += dt * (enraged ? 0.4 : 0.25);
@@ -2810,23 +2903,16 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
       SFX.fan();
       if (e.volleys >= 3) endAttack(e, enraged);
     }
-  } else if (e.attack === 'slam') {
-    // Rises high, then crashes down: rings roll out across the whole floor, one after another.
-    if (e.atkT < 0.7) e.slamY = damp(e.slamY, 3, 6, dt);
-    else if (e.atkT < 0.85) e.slamY = 3 - (e.atkT - 0.7) / 0.15 * 5.2;
-    else if (!e.slammed) {
-      e.slammed = true;
-      e.slamY = -2.2;
-      const rings = enraged ? 4 : 3;
-      for (let i = 0; i < rings; i++) shockwave(e.x, e.z, 10 * shotSpeed, 18, i * 0.42, PALETTE.red);
-      burst(e.x, 0.5, e.z, PALETTE.red, 90, 12, 0.9);
-      SFX.quakeBlast(true);
-      shake = Math.max(shake, cfg.shake * 0.3);
-      flashT = Math.max(flashT, 0.35);
-    } else {
-      e.slamY = damp(e.slamY, 0, 3, dt);
-      if (e.atkT > 2.4) { e.slammed = false; endAttack(e, enraged); }
+  } else if (e.attack === 'wall') {
+    // A wall of light sweeps the arena from the far side: run for its gap, or dash through it.
+    // Enraged, a second follows across the other way.
+    if (e.volleys === 0) {
+      e.volleys = 1;
+      const w = laserWall(0, enraged, shotSpeed);
+      if (w && enraged) laserWall(1.8, true, shotSpeed, 1 - w.axis);
+      popup('LASER WALL', 0, 0, 0, PALETTE.red, true);
     }
+    if (e.atkT > 2.6) endAttack(e, enraged);
   } else if (e.attack === 'turrets') {
     // Turrets drop into the open arena, each sweeping a beam along the floor.
     let alive = 0;
@@ -2842,6 +2928,80 @@ function updateBoss(e, dt, nx, nz, dist, rate, shotSpeed) {
     endAttack(e, enraged);
   }
 }
+// ---- laser walls ----------------------------------------------------------------------
+// Too tall to jump. It hurts whoever it passes over outside the gap, unless they dash through it.
+const LW_H = 7, LW_WARM = 0.9, LW_DMG = 22;
+function laserWall(delay, enraged, shotSpeed, axis = random() < 0.5 ? 0 : 1) {
+  const w = lwalls.find(w => !w.active);
+  if (!w) return null;
+  // axis 0 spans X and sweeps along Z; axis 1 spans Z and sweeps along X. It starts on the far side.
+  const p = axis ? px : pz, o = axis ? pz : px;
+  const dir = p > 0.5 ? 1 : p < -0.5 ? -1 : random() < 0.5 ? 1 : -1;
+  // The gap is somewhere to run to: never where the player stands, never out of reach.
+  const lim = HALF - 3;
+  let gap = o + (random() < 0.5 ? -1 : 1) * (5 + random() * 8);
+  if (Math.abs(gap) > lim) gap = clamp(o - (gap - o), -lim, lim);
+  Object.assign(w, { active: true, axis, dir, pos: -dir * (HALF + 0.5), speed: (enraged ? 7 : 5.8) * shotSpeed, gap, gap0: gap, gapW: enraged ? 3.8 : 4.6,
+    warm: LW_WARM + delay, hit: false, prevS: NaN, t: 0, drift: enraged ? 2.2 : 0 });
+  w.lpos = w.pos;
+  w.group.visible = false;
+  return w;
+}
+function updateLaserWalls(dt) {
+  for (let i = 0; i < lwalls.length; i++) {
+    const w = lwalls[i];
+    if (!w.active) continue;
+    w.lpos = w.pos;
+    if (w.warm > 0) {
+      w.warm -= dt;
+      if (w.warm <= LW_WARM && !w.group.visible) { w.group.visible = true; SFX.wallWarm(); }
+      continue;
+    }
+    w.t += dt;
+    w.pos += w.dir * w.speed * dt;
+    if (w.drift) w.gap = clamp(w.gap0 + Math.sin(w.t * 1.1) * w.drift, -HALF + 2.5, HALF - 2.5);
+    if (w.pos * w.dir > HALF + 0.5) { w.active = false; w.group.visible = false; continue; }
+    const p = w.axis ? px : pz, o = w.axis ? pz : px, s = (p - w.pos) * w.dir;
+    if (!w.hit && w.prevS > 0 && s <= 0 && Math.abs(o - w.gap) > w.gapW / 2 - PLAYER_R * 0.4) {
+      w.hit = true;
+      if (dashT <= 0) {
+        damagePlayer(LW_DMG, w.axis ? w.pos : px, w.axis ? pz : w.pos);
+        SFX.wallZap();
+        flashT = Math.max(flashT, 0.2);
+        if (w.axis) pvx += w.dir * 7; else pvz += w.dir * 7;
+        if (state !== 'playing') return;
+      }
+    }
+    w.prevS = s;
+  }
+}
+function drawLaserWalls(alpha, live) {
+  lwTex.offset.y -= live * 1.6;
+  let near = 0;
+  for (let i = 0; i < lwalls.length; i++) {
+    const w = lwalls[i];
+    if (!w.active || !w.group.visible) continue;
+    const g = w.group, pos = w.lpos + (w.pos - w.lpos) * alpha;
+    if (w.axis) { g.rotation.y = -Math.PI / 2; g.position.set(pos, 0, 0); } else { g.rotation.y = 0; g.position.set(0, 0, pos); }
+    const g0 = w.gap - w.gapW / 2, g1 = w.gap + w.gapW / 2, starts = [-HALF - 0.5, g1], lens = [g0 + HALF + 0.5, HALF + 0.5 - g1], ends = [g0, g1];
+    for (let k = 0; k < 2; k++) {
+      w.sheets[k].position.x = w.tops[k].position.x = w.foots[k].position.x = starts[k];
+      w.sheets[k].scale.set(Math.max(0.01, lens[k]), LW_H, 1);
+      w.tops[k].scale.x = w.foots[k].scale.x = Math.max(0.01, lens[k]);
+      w.tops[k].position.y = LW_H; w.foots[k].position.y = 0.07;
+      w.posts[k].position.x = ends[k];
+      w.posts[k].scale.y = LW_H + 0.6;
+    }
+    // Warming at its edge it flickers; sweeping, it burns, with a shimmer.
+    const warm = w.warm > 0;
+    w.sheetMat.opacity = warm ? (Math.sin(time * 38) > 0 ? 0.28 : 0.08) : (DARK ? 0.42 : 0.5) + Math.sin(time * 31) * 0.06;
+    w.railMat.opacity = warm ? 0.5 : 1;
+    w.postMat.opacity = warm ? 0.6 + Math.sin(time * 20) * 0.3 : 1;
+    if (!warm && state === 'playing') near = Math.max(near, clamp(1 - Math.abs((w.axis ? px : pz) - pos) / 14, 0, 1));
+  }
+  wallHum(near);
+}
+
 // ---- shockwaves and the jump warning ------------------------------------------------
 const _quakeColors = new Map();
 function shockwave(x, z, speed, dmg, delay, color, maxR = 34, r0 = 0.6) {
@@ -2853,7 +3013,10 @@ function shockwave(x, z, speed, dmg, delay, color, maxR = 34, r0 = 0.6) {
   Object.assign(q, { active: true, x, z, r: r0, speed, maxR, delay, hit: false, dmg });
   q.band.visible = delay <= 0;
 }
-function clearQuakes() { for (const q of quakes) { q.active = false; q.band.visible = false; } }
+function clearQuakes() {
+  for (const q of quakes) { q.active = false; q.band.visible = false; }
+  for (const w of lwalls) { w.active = false; w.group.visible = false; }
+}
 function updateQuakes(dt) {
   for (let i = 0; i < quakes.length; i++) {
     const q = quakes[i];
@@ -2961,7 +3124,7 @@ function updateAmmo(dt) {
   // In a Warden fight there are few kills to drop ammo, so when the rifle runs low, crates fall
   // into the open arena on their own: every 6 s under two magazines, every 3.5 s under one.
   const supply = (weapon ? rifleMag : ammo) + reserve;
-  const every = !bossRef || scavenging || phase !== 'fight' ? 0 : supply <= stats.mag ? 3.5 : supply <= stats.mag * 2 ? 6 : 0;
+  const every = !bossRef || scavenging || phase !== 'fight' ? 0 : (supply <= stats.mag ? 3.5 : supply <= stats.mag * 2 ? 6 : 0) / DF.ammo;
   let onGround = 0;
   for (let i = 0; i < ammoDrops.length; i++) if (ammoDrops[i].active) onGround++;
   if (every && onGround < 2) {
@@ -3311,6 +3474,7 @@ function draw(dt, alpha = 1) {
     q.mat.opacity = Math.min(1, (q.maxR - q.r) / Math.min(6, q.maxR * 0.35)) * 0.9;   // fades out as it reaches its end
   }
 
+  drawLaserWalls(alpha, live);
   stepParticles(live);
 
   // Nova.
@@ -3421,14 +3585,14 @@ function draw(dt, alpha = 1) {
       sty(ui['reload-cursor'], 'left', pct(emerg.k));
       sty(ui['reload-zone'], 'display', 'block');
       sty(ui['reload-zone'], 'left', pct(emerg.zone));
-      sty(ui['reload-zone'], 'width', pct(EMERG_W));
+      sty(ui['reload-zone'], 'width', pct(emergW()));
     } else if (reloading) {
       const k = shellReload() ? clamp((ammo + reloadT / reloadDur) / mag, 0, 1) : clamp(reloadT / reloadDur, 0, 1), rt = reloadTime();
       sty(ui['reload-fill'], 'width', pct(k));
       sty(ui['reload-cursor'], 'left', pct(k));
       sty(ui['reload-zone'], 'display', reloadTried ? 'none' : 'block');
       sty(ui['reload-zone'], 'left', pct(PERFECT_AT * rt / reloadDur));
-      sty(ui['reload-zone'], 'width', pct(stats.perfect * rt / reloadDur));
+      sty(ui['reload-zone'], 'width', pct(stats.perfect * DF.zone * rt / reloadDur));
     }
   }
   bannerT = Math.max(0, bannerT - live);
@@ -3463,6 +3627,35 @@ function draw(dt, alpha = 1) {
   if (fpsAcc >= 0.5) { fpsVal = Math.round(fpsFrames / fpsAcc); fpsAcc = 0; fpsFrames = 0; }
   sty(ui.fps, 'display', cfg.fps ? 'block' : 'none');
   if (cfg.fps) txt(ui.fps, `${fpsVal} FPS`);
+
+  // The HUD drifts a few pixels the way the player moves (sideways with a strafe, up with a jump,
+  // down with a landing), never off the screen; the warnings and sector details stay put.
+  // Hit, it glitches: split colours and a jolt.
+  const playing = state === 'playing' && phase !== 'upgrade';
+  {
+    const hx = ppx + (px - ppx) * alpha, hy = ppy + (py - ppy) * alpha, hz = ppz + (pz - ppz) * alpha, inv = 1 / Math.max(dt, 1e-3);
+    const lat = playing && dt > 0 ? ((hx - hudLX) * Math.cos(yaw) - (hz - hudLZ) * Math.sin(yaw)) * inv : 0;
+    const up = playing && dt > 0 ? (hy - hudLY) * inv : 0;
+    hudLX = hx; hudLY = hy; hudLZ = hz;
+    hudX = damp(hudX, clamp(lat * 1.1, -12, 12), 7, dt);
+    hudY = damp(hudY, clamp(-up * 0.9, -8, 8) + landT * 5, 9, dt);
+    const jolt = playing && dmgT > 0.6 ? (dmgT - 0.6) * 8 : 0;
+    const tx = clamp(hudX + (Math.random() * 2 - 1) * jolt, -14, 14), ty = clamp(hudY + (Math.random() * 2 - 1) * jolt * 0.6, -12, 12);
+    const tr = Math.abs(tx) < 0.05 && Math.abs(ty) < 0.05 ? 'none' : `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px)`;
+    sty(ui['hud-left'], 'transform', tr); sty(ui['hud-right'], 'transform', tr); sty(ui.bottom, 'transform', tr);
+    cls(document.body, 'glitch', playing && dmgT > 0.55);
+  }
+  // Dashing, streaks rush past the edges of the view.
+  speedT = playing && dashT > 0 ? 1 : Math.max(0, speedT - live * 5);
+  sty(ui.speed, 'opacity', op(speedT * 0.8));
+  if (speedT > 0) sty(ui.speed, 'transform', `rotate(${(Math.random() * 7).toFixed(1)}deg) scale(${(1 + (1 - speedT) * 0.3).toFixed(2)})`);
+  // A kill throws a diamond out of the crosshair.
+  killT = Math.max(0, killT - live * 4);
+  sty(ui.killring, 'opacity', op(killT));
+  if (killT > 0) {
+    sty(ui.killring, 'transform', `rotate(45deg) scale(${(0.5 + (1 - killT) * 1.3).toFixed(2)})`);
+    sty(ui.killring, 'borderColor', killCrit ? PALETTE.yellow : PALETTE.accent);
+  }
 
   // The jump warning: bars close in on JUMP as a ring or a beam nears; red is the moment to jump.
   const warnOn = state === 'playing' && phase !== 'upgrade' && hazardT < 0.9;
@@ -3569,6 +3762,16 @@ function drawRadar() {
     plot(q.x, q.z);
     c.beginPath(); c.arc(_rx, _ry, q.r * k, 0, Math.PI * 2); c.stroke();
   }
+  for (const w of lwalls) {
+    if (!w.active || !w.group.visible) continue;
+    const g0 = w.gap - w.gapW / 2, g1 = w.gap + w.gapW / 2;
+    c.beginPath();
+    for (const [a, b] of [[-HALF, g0], [g1, HALF]]) {
+      if (w.axis) { plot(w.pos, a); c.moveTo(_rx, _ry); plot(w.pos, b); c.lineTo(_rx, _ry); }
+      else { plot(a, w.pos); c.moveTo(_rx, _ry); plot(b, w.pos); c.lineTo(_rx, _ry); }
+    }
+    c.lineWidth = 3; c.stroke(); c.lineWidth = 2;
+  }
   for (const e of enemies) {
     if (e.type !== 'turret' || e.modeT < 1.4) continue;
     plot(e.x + Math.sin(e.beamA) * e.beamLen, e.z + Math.cos(e.beamA) * e.beamLen);
@@ -3620,7 +3823,11 @@ function drawRadar() {
 // ---- settings: the ? screen ------------------------------------------------------------
 function saveSettings() { saved.set('settings', cfg); applySettings(); }
 function applySettings() { setVolume(cfg.volume); }
-function settingText(d) { const v = cfg[d.id]; return d.bool ? (v ? 'ON' : 'OFF') : d.options ? d.options[v] : d.show(v); }
+function settingText(d) {
+  const v = cfg[d.id];
+  if (d.id === 'difficulty' && runOn && v !== runDiff) return `${d.options[v]} · NEXT RUN`;
+  return d.bool ? (v ? 'ON' : 'OFF') : d.options ? d.options[v] : d.show(v);
+}
 function changeSetting(i, dir) {
   const d = SETTINGS[i];
   if (d.bool) cfg[d.id] = !cfg[d.id];
